@@ -47,6 +47,10 @@ def main():
             df.columns[7]: "Juice_Loss_Kasese", # Column H
             df.columns[15]: "Dry_Output"        # Column P
         }, inplace=True)
+        
+        # Convert Juice_Loss_Kasese to numeric (non-numeric values become NaN)
+        df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        
         df.sort_index(ascending=False, inplace=True)
         
         # Compute global stats for each buyer
