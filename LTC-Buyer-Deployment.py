@@ -25,19 +25,19 @@ def compute_buyer_stats(buyer_df):
     return global_yield, juice_loss_val
 
 def main():
-    st.title("LTC Buyer Performance Allocation")
+    st.title("LTC Buyer Performance & CP Allocation")
 
     st.markdown("### Upload Buyer Performance Excel")
     buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
     
-    st.markdown("### Upload CP Schedule Excel")
+    st.markdown("### Upload CP Schedule Excel (for per date allocation)")
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
     
-    if buyer_file is not None and schedule_file is not None:
+    if buyer_file is not None:
         # -------------------------------
         # Process Buyer Performance Excel
         # -------------------------------
-        # Read the buyer performance file; assume headers are on row 5 (header=4)
+        # Assume headers are on row 5 (header=4)
         df = pd.read_excel(buyer_file, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",        # Column A
@@ -49,7 +49,7 @@ def main():
         }, inplace=True)
         df.sort_index(ascending=False, inplace=True)
 
-        # Compute global stats for each buyer (grouped by Buyer)
+        # Compute global stats for each buyer
         global_list = []
         for buyer, bdf in df.groupby("Buyer"):
             g_yield, g_juice = compute_buyer_stats(bdf)
@@ -59,7 +59,6 @@ def main():
                 "Global_Juice_Loss": g_juice
             })
         global_stats_df = pd.DataFrame(global_list)
-        # Format display columns
         global_stats_df["Global_Yield_Display"] = global_stats_df["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
@@ -67,7 +66,7 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
 
-        # Compute CP-specific yields: group by Collection_Point and Buyer
+        # Compute CP-specific yield per CP–Buyer pair
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
             "Dry_Output": "sum"
@@ -79,75 +78,120 @@ def main():
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        # Merge global stats into cp_stats by Buyer
+        # Merge global stats into cp_stats
         candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
-        # Filter: only keep candidates with Global Yield >= 36% and Global Juice Loss <= 18%
+        # Filter candidates based on global conditions (global yield >= 36% and global juice loss <= 18%)
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
         ].copy()
 
         # -------------------------------
-        # Process CP Schedule Excel
-        # -------------------------------
-        # For schedule file, assume:
-        # - Column A has Date (rename it 'Date') and we only take rows where Date is not null.
-        # - Column D has the CP (rename it 'CP')
-        sched_df = pd.read_excel(schedule_file)
-        # Rename columns for clarity (assuming A and D by position)
-        sched_df.rename(columns={
-            sched_df.columns[0]: "Date",
-            sched_df.columns[3]: "CP"
+        # Global Allocation (by CP) Output:
+        # For each CP, group candidates and rank them by CP_Yield descending
+        ranking_list = []
+        for cp, group in candidate_df.groupby("Collection_Point"):
+            group_sorted = group.sort_values(by="CP_Yield", ascending=False)
+            best = group_sorted.iloc[0]["Buyer"] if len(group_sorted) >= 1 else ""
+            second = group_sorted.iloc[1]["Buyer"] if len(group_sorted) >= 2 else ""
+            third = group_sorted.iloc[2]["Buyer"] if len(group_sorted) >= 3 else ""
+            ranking_list.append({
+                "Collection_Point": cp,
+                "Best Buyer for CP": best,
+                "Second Best Buyer for CP": second,
+                "Third Best Buyer for CP": third
+            })
+        ranking_df = pd.DataFrame(ranking_list)
+
+        # Merge ranking info back into candidate_df for display
+        display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
+        display_df["Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Second Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Second Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Third Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Third Best Buyer for CP"] else "", axis=1
+        )
+
+        final_display = display_df[[
+            "Collection_Point", "Buyer", 
+            "Global_Yield_Display", "Global_Juice_Loss_Display",
+            "CP_Yield_Display",
+            "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
+        ]].drop_duplicates().sort_values(by="Collection_Point")
+        final_display.rename(columns={
+            "Global_Yield_Display": "Yield three prior harvest(%)",
+            "Global_Juice_Loss_Display": "Juice loss at Kasese(%)",
+            "CP_Yield_Display": "CP Yield(%)"
         }, inplace=True)
-        # Keep only rows with non-null Date and CP
-        sched_df = sched_df[sched_df["Date"].notnull() & sched_df["CP"].notnull()].copy()
-        # Convert Date column to datetime
-        sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
-        sched_df = sched_df[sched_df["Date"].notnull()]  # drop rows with conversion errors
+
+        st.subheader("Buyer Performance by CP with Allocations (Global)")
+        st.dataframe(final_display)
+
+        # Provide download button for the global allocation export
+        csv_global = final_display.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Global Allocation CSV",
+            data=csv_global,
+            file_name='global_allocation.csv',
+            mime='text/csv',
+        )
 
         # -------------------------------
-        # Allocation per Date:
-        # For each unique date in schedule, we:
-        #  a) Get the list of CPs for that date.
-        #  b) From candidate_df, take only rows whose Collection_Point is in that list.
-        #  c) For each buyer in this subset, choose the candidate row with maximum CP_Yield.
-        #  d) Group these chosen allocations by CP and rank them by CP_Yield descending.
-        #  e) Record Best, Second, and Third buyer per CP.
+        # Per Date Allocation using CP Schedule Excel
         # -------------------------------
-        allocation_results = []  # will store dicts with Date, CP, and allocated buyers
+        if schedule_file is not None:
+            sched_df = pd.read_excel(schedule_file)
+            # Assume column A is Date and column D is CP
+            sched_df.rename(columns={
+                sched_df.columns[0]: "Date",
+                sched_df.columns[3]: "CP"
+            }, inplace=True)
+            sched_df = sched_df[sched_df["Date"].notnull() & sched_df["CP"].notnull()].copy()
+            sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
+            sched_df = sched_df[sched_df["Date"].notnull()]
 
-        for dt in sched_df["Date"].unique():
-            # For this date, get the CPs from schedule (unique)
-            cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
-            # Filter candidate_df to those CPs
-            candidates_date = candidate_df[candidate_df["Collection_Point"].isin(cp_list)].copy()
-            # For each buyer, choose the candidate row with highest CP_Yield (if multiple CPs available)
-            if not candidates_date.empty:
-                best_candidates = candidates_date.loc[candidates_date.groupby("Buyer")["CP_Yield"].idxmax()]
-            else:
-                best_candidates = pd.DataFrame()
-            # Now group by Collection_Point (each CP on this date) and sort by CP_Yield descending
-            for cp in cp_list:
-                cp_group = best_candidates[best_candidates["Collection_Point"] == cp].copy()
-                cp_group.sort_values(by="CP_Yield", ascending=False, inplace=True)
-                allocated = cp_group.copy()
-                # Only distinct buyers; by construction each buyer appears only once.
-                # Now assign ranking if available.
-                best_buyer = allocated.iloc[0]["Buyer"] if len(allocated) >= 1 else ""
-                second_buyer = allocated.iloc[1]["Buyer"] if len(allocated) >= 2 else ""
-                third_buyer = allocated.iloc[2]["Buyer"] if len(allocated) >= 3 else ""
-                allocation_results.append({
-                    "Date": dt.date(),
-                    "Collection_Point": cp,
-                    "Best Buyer for CP": best_buyer,
-                    "Second Best Buyer for CP": second_buyer,
-                    "Third Best Buyer for CP": third_buyer
-                })
+            # For each unique date, consider the CPs on that day and allocate buyers.
+            allocation_results = []
+            # For this allocation, from candidate_df we use CP-specific yields and global stats
+            # For each date, we take candidates for CPs in the schedule,
+            # and for each buyer (if appearing in multiple CPs) we choose the row with maximum CP_Yield.
+            for dt in sched_df["Date"].unique():
+                cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
+                candidates_date = candidate_df[candidate_df["Collection_Point"].isin(cp_list)].copy()
+                if not candidates_date.empty:
+                    best_candidates = candidates_date.loc[candidates_date.groupby("Buyer")["CP_Yield"].idxmax()]
+                else:
+                    best_candidates = pd.DataFrame()
+                # For each CP on that date, rank by CP_Yield descending.
+                for cp in cp_list:
+                    cp_group = best_candidates[best_candidates["Collection_Point"] == cp].copy()
+                    cp_group.sort_values(by="CP_Yield", ascending=False, inplace=True)
+                    best = cp_group.iloc[0]["Buyer"] if len(cp_group) >= 1 else ""
+                    second = cp_group.iloc[1]["Buyer"] if len(cp_group) >= 2 else ""
+                    third = cp_group.iloc[2]["Buyer"] if len(cp_group) >= 3 else ""
+                    allocation_results.append({
+                        "Date": dt.date(),
+                        "Collection_Point": cp,
+                        "Best Buyer for CP": best,
+                        "Second Best Buyer for CP": second,
+                        "Third Best Buyer for CP": third
+                    })
+            allocation_df = pd.DataFrame(allocation_results)
+            allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
 
-        allocation_df = pd.DataFrame(allocation_results)
-        allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
+            st.subheader("Buyer Allocation per CP per Date")
+            st.dataframe(allocation_df)
 
-        st.subheader("Buyer Allocation per CP per Date")
-        st.dataframe(allocation_df)
+            # Provide download button for the per date allocation export
+            csv_date = allocation_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Per Date Allocation CSV",
+                data=csv_date,
+                file_name='per_date_allocation.csv',
+                mime='text/csv',
+            )
 
 if __name__ == "__main__":
     main()
