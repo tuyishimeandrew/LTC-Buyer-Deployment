@@ -88,7 +88,7 @@ def main():
         #    Only consider buyers with Global Yield >= 36% and Global Juice Loss <= 18%
         # -------------------------------
         candidate_df = candidate_df[
-            (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
+            (candidate_df["Global_Yield"] >= 0.36) & (candidate_df["Global_Juice_Loss"] <= 0.18)
         ].copy()
 
         # -------------------------------
