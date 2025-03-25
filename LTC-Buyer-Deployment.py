@@ -12,7 +12,6 @@ def main():
         # -------------------------------
         # Assume row 5 has headers so we use header=4
         df = pd.read_excel(uploaded_file, header=4)
-
         df.rename(columns={
             df.columns[0]: "Harvest_ID",        # Column A
             df.columns[1]: "Buyer",             # Column B
@@ -21,14 +20,12 @@ def main():
             df.columns[7]: "Juice_Loss_Kasese", # Column H
             df.columns[15]: "Dry_Output"        # Column P
         }, inplace=True)
-
-        # Sort descending (so that head(3) picks the most recent valid harvests)
         df.sort_index(ascending=False, inplace=True)
 
         # -------------------------------
         # 2. Calculate Global Stats for each Buyer
-        #    - Global Yield: Using the last 3 valid harvests (only if both Fresh and Dry are valid)
-        #    - Global Juice Loss: Most recent non-null value (multiplied by 100 to convert to %)
+        #    - Global Yield: From the last 3 valid harvests (if both Fresh and Dry are valid)
+        #    - Global Juice Loss: Most recent non-null value (multiplied by 100 to convert to %, rounded to 2 decimals)
         # -------------------------------
         global_stats = []
         grouped_buyer = df.groupby("Buyer")
@@ -39,15 +36,11 @@ def main():
             last_3 = valid.head(3)
             total_fresh = last_3["Fresh_Purchased"].sum()
             total_dry = last_3["Dry_Output"].sum()
-            if total_fresh > 0:
-                yield_percentage = (total_dry / total_fresh) * 100
-            else:
-                yield_percentage = np.nan
+            yield_percentage = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
 
             latest_juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
             if not latest_juice_loss_row.empty:
                 juice_loss_val = latest_juice_loss_row["Juice_Loss_Kasese"].values[0]
-                # Multiply by 100 to convert to percentage and round to 2 decimals
                 if pd.notnull(juice_loss_val) and isinstance(juice_loss_val, (int, float)):
                     juice_loss_val = round(juice_loss_val * 100, 2)
             else:
@@ -60,8 +53,6 @@ def main():
             })
 
         global_stats_df = pd.DataFrame(global_stats)
-
-        # Format global values for display later:
         global_stats_df["Global_Yield_Display"] = global_stats_df["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
@@ -86,51 +77,41 @@ def main():
         )
 
         # -------------------------------
-        # 4. Merge CP stats with Global stats so we have, for each CP-Buyer candidate:
-        #    - Global Yield and Global Juice Loss (with their display formats)
-        #    - CP_Yield (CP-specific yield)
+        # 4. Merge CP stats with Global stats so we have for each CP-Buyer candidate:
+        #    - Global Yield, Global Juice Loss and their display versions
+        #    - CP_Yield and its display version
         # -------------------------------
         candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
 
         # -------------------------------
         # 5. Filter candidates based on global conditions:
-        #    Only consider buyers with Global Yield >= 36% and Global Juice Loss <= 18%.
-        #    This ensures no buyer is deployed unless they meet these criteria.
+        #    Only consider buyers with Global Yield >= 36% and Global Juice Loss <= 18%
         # -------------------------------
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
         ].copy()
 
         # -------------------------------
-        # 6. Allocate Buyers to CPs using a Greedy Algorithm
-        #    - Each candidate row has a CP_Yield.
-        #    - Sort all candidate rows (across all CPs) by CP_Yield in descending order.
-        #    - Each buyer can only be allocated once (global uniqueness).
-        #    - Each CP can have up to 3 allocated buyers.
+        # 6. Allocate Buyers to CPs using a Greedy Algorithm:
+        #    - Sort candidate rows by CP_Yield (descending)
+        #    - Each buyer can only be allocated once overall
+        #    - Each CP can have up to 3 allocated buyers
         # -------------------------------
         candidate_df.sort_values(by="CP_Yield", ascending=False, inplace=True)
+        allocated_buyers = set()
+        cp_allocations = {cp: [] for cp in candidate_df["Collection_Point"].unique()}
+        allocation_records = []
 
-        allocated_buyers = set()  # Track buyers already allocated
-        cp_allocations = {}       # Dictionary: key = CP, value = list of allocated buyers
-
-        # Initialize allocation dictionary for each CP
-        for cp in candidate_df["Collection_Point"].unique():
-            cp_allocations[cp] = []
-
-        allocation_records = []  # Record allocated candidate rows with an "Allocation_Round" column
         for idx, row in candidate_df.iterrows():
             buyer = row["Buyer"]
             cp = row["Collection_Point"]
-            # Skip if this buyer is already allocated
             if buyer in allocated_buyers:
                 continue
-            # Skip if this CP already has 3 allocated buyers
             if len(cp_allocations[cp]) >= 3:
                 continue
-            # Allocate the buyer to this CP
             allocated_buyers.add(buyer)
             cp_allocations[cp].append(row)
-            round_number = len(cp_allocations[cp])  # 1, 2, or 3
+            round_number = len(cp_allocations[cp])
             record = row.copy()
             record["Allocation_Round"] = round_number
             allocation_records.append(record)
@@ -138,7 +119,7 @@ def main():
         allocated_df = pd.DataFrame(allocation_records)
 
         # -------------------------------
-        # 7. Create a Ranking DataFrame by CP based on allocation rounds.
+        # 7. Create a Ranking DataFrame by CP based on allocation rounds:
         #    For each CP, assign:
         #      - Best Buyer for CP = Allocation_Round 1
         #      - Second Best Buyer for CP = Allocation_Round 2
@@ -159,12 +140,10 @@ def main():
         ranking_df = pd.DataFrame(ranking_list)
 
         # -------------------------------
-        # 8. Merge the ranking info back into the candidate table (for display)
-        #    For each CP–Buyer candidate row, add ranking columns that show the buyer name
-        #    only on the row that matches the allocated buyer for that rank.
+        # 8. Merge ranking info back into candidate table (for display):
+        #    For each CP–Buyer row, add ranking columns that show the buyer's name only on the allocated row.
         # -------------------------------
         display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
-
         display_df["Best Buyer for CP"] = display_df.apply(
             lambda row: row["Buyer"] if row["Buyer"] == row["Best_Buyer"] else "", axis=1
         )
@@ -176,19 +155,21 @@ def main():
         )
 
         # -------------------------------
-        # 9. Final Display
-        #    Merge global display columns for each buyer and select/rename columns as required.
+        # 9. Final Display:
+        #    Select and rename columns as required:
+        #      - Collection_Point, Buyer,
+        #      - Yield three prior harvest(%) from Global_Yield_Display,
+        #      - Juice loss at Kasese(%) from Global_Juice_Loss_Display,
+        #      - CP Yield(%) from CP_Yield_Display,
+        #      - Best Buyer for CP, Second Best Buyer for CP, Third Best Buyer for CP
         # -------------------------------
-        display_df = pd.merge(display_df, global_stats_df[["Buyer", "Global_Yield_Display", "Global_Juice_Loss_Display"]],
-                               on="Buyer", how="left")
-        
         final_display = display_df[[
             "Collection_Point", "Buyer", 
             "Global_Yield_Display", "Global_Juice_Loss_Display",
             "CP_Yield_Display",
             "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
         ]].drop_duplicates().sort_values(by="Collection_Point")
-        
+
         final_display.rename(columns={
             "Global_Yield_Display": "Yield three prior harvest(%)",
             "Global_Juice_Loss_Display": "Juice loss at Kasese(%)",
