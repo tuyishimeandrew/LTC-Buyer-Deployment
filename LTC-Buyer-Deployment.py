@@ -5,7 +5,7 @@ import numpy as np
 def compute_buyer_stats(buyer_df):
     """
     Compute global statistics for a single buyer:
-      - Global yield: using last 3 valid harvests (if both Fresh_Purchased and Dry_Output are numeric)
+      - Global yield: using the last 3 valid harvests (only if both Fresh_Purchased and Dry_Output are numeric)
       - Global juice loss: the most recent non-null value (multiplied by 100 and rounded to 2 decimals)
     """
     valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
@@ -25,7 +25,7 @@ def compute_buyer_stats(buyer_df):
     return global_yield, juice_loss_val
 
 def main():
-    st.title("LTC Buyer Performance & CP Allocation")
+    st.title("LTC Buyer Performance Allocation")
 
     st.markdown("### Upload Buyer Performance Excel")
     buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
@@ -47,9 +47,10 @@ def main():
             df.columns[7]: "Juice_Loss_Kasese", # Column H
             df.columns[15]: "Dry_Output"        # Column P
         }, inplace=True)
+        # (Optional: st.write("Buyer file columns:", df.columns.tolist()))
         df.sort_index(ascending=False, inplace=True)
 
-        # Compute global stats for each buyer
+        # Compute global stats per buyer
         global_list = []
         for buyer, bdf in df.groupby("Buyer"):
             g_yield, g_juice = compute_buyer_stats(bdf)
@@ -66,28 +67,29 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
 
-        # Compute CP-specific yield per CP–Buyer pair
+        # Compute CP-specific yields per CP–Buyer pair
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
             "Dry_Output": "sum"
         }).reset_index()
         cp_stats["CP_Yield"] = cp_stats.apply(
-            lambda row: (row["Dry_Output"] / row["Fresh_Purchased"]) * 100 
-                        if row["Fresh_Purchased"] > 0 else np.nan, axis=1
+            lambda row: (row["Dry_Output"] / row["Fresh_Purchased"]) * 100 if row["Fresh_Purchased"] > 0 else np.nan,
+            axis=1
         )
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        # Merge global stats into cp_stats
+
+        # Merge global stats into CP stats
         candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
-        # Filter candidates based on global conditions (global yield >= 36% and global juice loss <= 18%)
+        # Filter: only keep candidates with Global Yield >= 36% and Global Juice Loss <= 18%
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
         ].copy()
 
         # -------------------------------
-        # Global Allocation (by CP) Output:
-        # For each CP, group candidates and rank them by CP_Yield descending
+        # Global Allocation (Output 1)
+        # For each CP, rank candidates by CP_Yield (descending)
         ranking_list = []
         for cp, group in candidate_df.groupby("Collection_Point"):
             group_sorted = group.sort_values(by="CP_Yield", ascending=False)
@@ -101,7 +103,6 @@ def main():
                 "Third Best Buyer for CP": third
             })
         ranking_df = pd.DataFrame(ranking_list)
-
         # Merge ranking info back into candidate_df for display
         display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
         display_df["Best Buyer for CP"] = display_df.apply(
@@ -113,7 +114,6 @@ def main():
         display_df["Third Best Buyer for CP"] = display_df.apply(
             lambda row: row["Buyer"] if row["Buyer"] == row["Third Best Buyer for CP"] else "", axis=1
         )
-
         final_display = display_df[[
             "Collection_Point", "Buyer", 
             "Global_Yield_Display", "Global_Juice_Loss_Display",
@@ -125,25 +125,22 @@ def main():
             "Global_Juice_Loss_Display": "Juice loss at Kasese(%)",
             "CP_Yield_Display": "CP Yield(%)"
         }, inplace=True)
-
-        st.subheader("Buyer Performance by CP with Allocations (Global)")
+        st.subheader("Global Buyer Performance by CP with Allocations")
         st.dataframe(final_display)
-
-        # Provide download button for the global allocation export
-        csv_global = final_display.to_csv(index=False).encode('utf-8')
+        csv_global = final_display.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="Download Global Allocation CSV",
             data=csv_global,
-            file_name='global_allocation.csv',
-            mime='text/csv',
+            file_name="global_allocation.csv",
+            mime="text/csv",
         )
 
         # -------------------------------
-        # Per Date Allocation using CP Schedule Excel
+        # Per Date Allocation (Output 2)
         # -------------------------------
         if schedule_file is not None:
             sched_df = pd.read_excel(schedule_file)
-            # Assume column A is Date and column D is CP
+            # Assume: Column A → Date, Column D → CP
             sched_df.rename(columns={
                 sched_df.columns[0]: "Date",
                 sched_df.columns[3]: "CP"
@@ -151,20 +148,20 @@ def main():
             sched_df = sched_df[sched_df["Date"].notnull() & sched_df["CP"].notnull()].copy()
             sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
             sched_df = sched_df[sched_df["Date"].notnull()]
-
-            # For each unique date, consider the CPs on that day and allocate buyers.
+            
             allocation_results = []
-            # For this allocation, from candidate_df we use CP-specific yields and global stats
-            # For each date, we take candidates for CPs in the schedule,
-            # and for each buyer (if appearing in multiple CPs) we choose the row with maximum CP_Yield.
+            # Process each unique date from schedule
             for dt in sched_df["Date"].unique():
+                # Get list of CPs for that date
                 cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
+                # Filter candidate_df to those CPs
                 candidates_date = candidate_df[candidate_df["Collection_Point"].isin(cp_list)].copy()
                 if not candidates_date.empty:
+                    # For each buyer, select the candidate row with maximum CP_Yield (if buyer appears in multiple CPs)
                     best_candidates = candidates_date.loc[candidates_date.groupby("Buyer")["CP_Yield"].idxmax()]
                 else:
                     best_candidates = pd.DataFrame()
-                # For each CP on that date, rank by CP_Yield descending.
+                # For each CP on that date, rank by CP_Yield descending
                 for cp in cp_list:
                     cp_group = best_candidates[best_candidates["Collection_Point"] == cp].copy()
                     cp_group.sort_values(by="CP_Yield", ascending=False, inplace=True)
@@ -180,17 +177,14 @@ def main():
                     })
             allocation_df = pd.DataFrame(allocation_results)
             allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
-
             st.subheader("Buyer Allocation per CP per Date")
             st.dataframe(allocation_df)
-
-            # Provide download button for the per date allocation export
-            csv_date = allocation_df.to_csv(index=False).encode('utf-8')
+            csv_date = allocation_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="Download Per Date Allocation CSV",
                 data=csv_date,
-                file_name='per_date_allocation.csv',
-                mime='text/csv',
+                file_name="per_date_allocation.csv",
+                mime="text/csv",
             )
 
 if __name__ == "__main__":
