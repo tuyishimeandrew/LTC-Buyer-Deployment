@@ -114,3 +114,170 @@ def main():
                 "Best Buyer for CP": best,
                 "Second Best Buyer for CP": second,
                 "Third Best Buyer for CP": third
+            })
+        ranking_df = pd.DataFrame(ranking_list)
+        
+        # Merge ranking info into candidate_df for display purposes
+        display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
+        # Only show the buyer name in ranking columns if it matches
+        display_df["Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Second Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Second Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Third Best Buyer for CP"] = display_df.apply(
+            lambda row: row["Buyer"] if row["Buyer"] == row["Third Best Buyer for CP"] else "", axis=1
+        )
+        final_display = display_df[[
+            "Collection_Point", "Buyer", 
+            "Yield three prior harvest(%)", "Juice loss at Kasese(%)",
+            "CP_Yield_Display",
+            "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
+        ]].drop_duplicates().sort_values(by="Collection_Point")
+        final_display.rename(columns={
+            "CP_Yield_Display": "CP Yield(%)"
+        }, inplace=True)
+        
+        st.subheader("Global Buyer Performance by CP with Allocations")
+        st.dataframe(final_display)
+        csv_global = final_display.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Global Allocation CSV",
+            data=csv_global,
+            file_name="global_allocation.csv",
+            mime="text/csv",
+        )
+        
+        # ===============================
+        # PART 2: Per Date Allocation
+        # ===============================
+        if schedule_file is not None:
+            sched_df = pd.read_excel(schedule_file)
+            # Assume: Column A is Date and Column D is CP.
+            sched_df.rename(columns={
+                sched_df.columns[0]: "Date",
+                sched_df.columns[3]: "CP"
+            }, inplace=True)
+            sched_df = sched_df[sched_df["Date"].notnull() & sched_df["CP"].notnull()].copy()
+            sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
+            sched_df = sched_df[sched_df["Date"].notnull()]
+            
+            allocation_results = []
+            # Process allocation for each unique buying day.
+            for dt in sched_df["Date"].unique():
+                cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
+                # Consider candidates whose scheduled CP is among today's CPs.
+                candidates_date = candidate_df[candidate_df["Collection_Point"].isin(cp_list)].copy()
+                
+                # ----- Step 1: Primary Allocation -----
+                # For each buyer, choose their candidate row with maximum CP_Yield.
+                if not candidates_date.empty:
+                    best_candidates = candidates_date.loc[candidates_date.groupby("Buyer")["CP_Yield"].idxmax()]
+                else:
+                    best_candidates = pd.DataFrame()
+                
+                # Initialize allocation: dictionary with CP as key and list of allocated buyers.
+                allocation = {cp: [] for cp in cp_list}
+                assigned_buyers = set()  # Tracks buyers allocated today.
+                
+                # Primary allocation: assign each buyer to their CP if slot available (max 3 per CP).
+                sorted_best = best_candidates.sort_values(by="CP_Yield", ascending=False)
+                for _, row in sorted_best.iterrows():
+                    cp = row["Collection_Point"]
+                    buyer = row["Buyer"]
+                    if buyer not in assigned_buyers and len(allocation[cp]) < 3:
+                        allocation[cp].append(buyer)
+                        assigned_buyers.add(buyer)
+                
+                # ----- Step 2: Secondary Allocation -----
+                # Fill CPs with <3 slots using remaining candidate rows.
+                remaining_candidates = candidates_date[~candidates_date["Buyer"].isin(assigned_buyers)].copy()
+                remaining_candidates.sort_values(by="CP_Yield", ascending=False, inplace=True)
+                for _, row in remaining_candidates.iterrows():
+                    cp = row["Collection_Point"]
+                    buyer = row["Buyer"]
+                    if buyer not in assigned_buyers and len(allocation[cp]) < 3:
+                        allocation[cp].append(buyer)
+                        assigned_buyers.add(buyer)
+                
+                # ----- Step 3: Fallback Allocation -----
+                # For any CP with <3 slots, fill from global_stats_df.
+                fallback_candidates = global_stats_df[~global_stats_df["Buyer"].isin(assigned_buyers)].copy()
+                fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
+                for cp in cp_list:
+                    while len(allocation[cp]) < 3 and not fallback_candidates.empty:
+                        fallback_row = fallback_candidates.iloc[0]
+                        buyer = fallback_row["Buyer"]
+                        allocation[cp].append(buyer)
+                        assigned_buyers.add(buyer)
+                        fallback_candidates = fallback_candidates.drop(fallback_candidates.index[0])
+                
+                # ----- Step 4: Promotion for Empty CPs -----
+                # If any CP remains completely empty, try to fill it by reassigning a candidate
+                # from another CP that is not in the best (first) slot.
+                promotion_made = True
+                while promotion_made:
+                    promotion_made = False
+                    empty_cps = [cp for cp in cp_list if len(allocation[cp]) == 0]
+                    if not empty_cps:
+                        break
+                    # For each empty CP, search for a candidate from another CP.
+                    for cp_empty in empty_cps:
+                        candidate_found = None
+                        candidate_origin = None
+                        best_candidate_yield = -1
+                        # Look into all CPs (other than the empty one).
+                        for cp, buyers in allocation.items():
+                            if cp == cp_empty:
+                                continue
+                            # Only consider if there is more than one buyer in that CP.
+                            if len(buyers) > 1:
+                                # Eligible candidates are those not in the top (first) slot.
+                                for buyer in buyers[1:]:
+                                    # Look up candidate's CP_Yield from candidates_date.
+                                    rows = candidates_date[(candidates_date["Buyer"] == buyer) &
+                                                             (candidates_date["Collection_Point"] == cp)]
+                                    if not rows.empty:
+                                        candidate_row = rows.iloc[0]
+                                        if candidate_row["CP_Yield"] > best_candidate_yield:
+                                            best_candidate_yield = candidate_row["CP_Yield"]
+                                            candidate_found = buyer
+                                            candidate_origin = cp
+                        if candidate_found is not None:
+                            # Remove the candidate from their original CP.
+                            allocation[candidate_origin].remove(candidate_found)
+                            # Assign candidate_found as the best buyer in the empty CP.
+                            allocation[cp_empty].insert(0, candidate_found)
+                            # Note: assigned_buyers remains unchanged because the buyer is still deployed,
+                            # now in a different CP.
+                            promotion_made = True
+                            break  # Restart the promotion loop after any promotion.
+                
+                # Finally, record the allocation for each CP for this buying day.
+                for cp in cp_list:
+                    best_buyer = allocation[cp][0] if len(allocation[cp]) >= 1 else ""
+                    second_buyer = allocation[cp][1] if len(allocation[cp]) >= 2 else ""
+                    third_buyer = allocation[cp][2] if len(allocation[cp]) >= 3 else ""
+                    allocation_results.append({
+                        "Date": dt.date(),
+                        "Collection_Point": cp,
+                        "Best Buyer for CP": best_buyer,
+                        "Second Best Buyer for CP": second_buyer,
+                        "Third Best Buyer for CP": third_buyer
+                    })
+            
+            allocation_df = pd.DataFrame(allocation_results)
+            allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
+            st.subheader("Buyer Allocation per CP per Date")
+            st.dataframe(allocation_df)
+            csv_date = allocation_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Per Date Allocation CSV",
+                data=csv_date,
+                file_name="per_date_allocation.csv",
+                mime="text/csv",
+            )
+
+if __name__ == "__main__":
+    main()
