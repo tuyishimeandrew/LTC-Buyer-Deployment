@@ -15,6 +15,7 @@ def compute_buyer_stats(buyer_df):
     total_fresh = last_3["Fresh_Purchased"].sum()
     total_dry = last_3["Dry_Output"].sum()
     global_yield = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
+
     latest_juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
     if not latest_juice_loss_row.empty:
         juice_loss_val = latest_juice_loss_row["Juice_Loss_Kasese"].values[0]
@@ -85,8 +86,8 @@ def main():
         
         # Merge global stats into CP stats by Buyer
         candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
-        # Only keep candidates whose global performance meets the criteria:
-        # Global Yield >= 36% and Global Juice Loss <= 18%
+        # Filter candidates based on performance criteria:
+        # Global Yield must be at least 36% and Global Juice Loss no more than 18%
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
         ].copy()
@@ -132,11 +133,22 @@ def main():
         
         st.subheader("Global Buyer Performance by CP with Allocations")
         st.dataframe(final_display)
-        csv_global = final_display.to_csv(index=False).encode("utf-8")
+        csv_global_allocation = final_display.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="Download Global Allocation CSV",
-            data=csv_global,
+            data=csv_global_allocation,
             file_name="global_allocation.csv",
+            mime="text/csv",
+        )
+        
+        # New Export: Global performance per buyer
+        st.subheader("Global Buyer Performance Data")
+        st.dataframe(global_stats_df[["Buyer", "Global_Yield_Display", "Global_Juice_Loss_Display"]])
+        csv_global_stats = global_stats_df[["Buyer", "Global_Yield_Display", "Global_Juice_Loss_Display"]].to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Global Buyer Performance CSV",
+            data=csv_global_stats,
+            file_name="global_buyer_performance.csv",
             mime="text/csv",
         )
         
@@ -178,7 +190,7 @@ def main():
                 for idx, row in sorted_best.iterrows():
                     cp = row["Collection_Point"]
                     buyer = row["Buyer"]
-                    # If buyer is not already assigned and this CP has less than 3, allocate.
+                    # Only assign if buyer is not already assigned and CP has fewer than 3 slots.
                     if buyer not in assigned_buyers and len(allocation[cp]) < 3:
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
@@ -193,8 +205,8 @@ def main():
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
                 
-                # Step 4: Fallback – for any CP still with fewer than 3, use buyers from global stats (by highest global yield)
-                fallback_candidates = global_stats_df[~global_stats_df["Buyer"].isin(assigned_buyers)].copy()
+                # Step 4: Fallback – only use eligible buyers (those in candidate_df) to fill any CP with fewer than 3 slots.
+                fallback_candidates = candidate_df[~candidate_df["Buyer"].isin(assigned_buyers)].copy()
                 fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
                 for cp in cp_list:
                     while len(allocation[cp]) < 3 and not fallback_candidates.empty:
