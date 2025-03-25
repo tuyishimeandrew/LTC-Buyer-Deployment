@@ -7,10 +7,7 @@ def main():
 
     uploaded_file = st.file_uploader("Upload your Excel", type=["xlsx"])
     if uploaded_file is not None:
-        # -------------------------------
-        # 1. Read Excel and rename columns
-        # -------------------------------
-        # Assume row 5 has headers so we use header=4
+        # 1. Read Excel and rename columns (assuming headers are on row 5 → header=4)
         df = pd.read_excel(uploaded_file, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",        # Column A
@@ -20,13 +17,12 @@ def main():
             df.columns[7]: "Juice_Loss_Kasese", # Column H
             df.columns[15]: "Dry_Output"        # Column P
         }, inplace=True)
+        # Sort descending so that head(3) picks the most recent valid harvests
         df.sort_index(ascending=False, inplace=True)
 
-        # -------------------------------
-        # 2. Calculate Global Stats for each Buyer
-        # -------------------------------
-        # Global Yield: Use the last 3 valid harvests (only if both Fresh_Purchased and Dry_Output are valid)
-        # Global Juice Loss: Most recent non-null value (multiply by 100 and round to 2 decimals)
+        # 2. Calculate Global Stats per Buyer
+        #    Global Yield is computed from the last 3 valid harvests (only if both Fresh and Dry are valid)
+        #    Global Juice Loss is taken as the most recent non-null value, multiplied by 100 and rounded to 2 decimals.
         global_stats = []
         for buyer, buyer_df in df.groupby("Buyer"):
             valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
@@ -35,11 +31,11 @@ def main():
             last_3 = valid.head(3)
             total_fresh = last_3["Fresh_Purchased"].sum()
             total_dry = last_3["Dry_Output"].sum()
-            yield_percentage = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
+            global_yield = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
 
-            latest_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
-            if not latest_row.empty:
-                juice_loss_val = latest_row["Juice_Loss_Kasese"].values[0]
+            latest_juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
+            if not latest_juice_loss_row.empty:
+                juice_loss_val = latest_juice_loss_row["Juice_Loss_Kasese"].values[0]
                 if pd.notnull(juice_loss_val) and isinstance(juice_loss_val, (int, float)):
                     juice_loss_val = round(juice_loss_val * 100, 2)
             else:
@@ -47,10 +43,9 @@ def main():
 
             global_stats.append({
                 "Buyer": buyer,
-                "Global_Yield": yield_percentage,
+                "Global_Yield": global_yield,
                 "Global_Juice_Loss": juice_loss_val
             })
-
         global_stats_df = pd.DataFrame(global_stats)
         global_stats_df["Global_Yield_Display"] = global_stats_df["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
@@ -59,9 +54,8 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
 
-        # -------------------------------
         # 3. Compute CP-Specific Yield for each Buyer at each CP
-        # -------------------------------
+        #    CP_Yield = (sum of Dry_Output at CP) / (sum of Fresh_Purchased at CP) * 100
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
             "Dry_Output": "sum"
@@ -74,33 +68,17 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
 
-        # -------------------------------
-        # 4. Merge CP stats with Global stats for each CP-Buyer candidate
-        # -------------------------------
+        # 4. Merge CP stats with Global stats for each CP–Buyer candidate
         candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
 
-        # -------------------------------
-        # 5. Filter candidates based on global conditions:
-        #    Only consider buyers with Global Yield >= 36% and Global Juice Loss <= 18%
-        #    (The CP yield is used only for allocation, not as a threshold.)
-        # -------------------------------
+        # 5. Filter candidates based on global conditions only (global yield >= 36% and global juice loss <= 18%)
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
         ].copy()
 
-        # -------------------------------
-        # 6. Allocate each buyer to the CP where they achieved the maximum CP_Yield.
-        #    This ensures that each buyer is assigned to the CP where they performed best.
-        # -------------------------------
-        candidate_df.sort_values(by="CP_Yield", ascending=False, inplace=True)
-        allocated_df = candidate_df.drop_duplicates(subset=["Buyer"], keep="first")
-        # Now, each row in allocated_df represents a buyer allocated to their best CP
-
-        # -------------------------------
-        # 7. Group the allocated buyers by CP and assign ranking based on CP_Yield (descending)
-        # -------------------------------
+        # 6. For each CP, rank candidates by CP_Yield (descending order)
         ranking_list = []
-        for cp, group in allocated_df.groupby("Collection_Point"):
+        for cp, group in candidate_df.groupby("Collection_Point"):
             group_sorted = group.sort_values(by="CP_Yield", ascending=False)
             best = group_sorted.iloc[0]["Buyer"] if len(group_sorted) >= 1 else ""
             second = group_sorted.iloc[1]["Buyer"] if len(group_sorted) >= 2 else ""
@@ -113,11 +91,8 @@ def main():
             })
         ranking_df = pd.DataFrame(ranking_list)
 
-        # -------------------------------
-        # 8. Merge ranking info back into allocated_df (for display):
-        #    For each CP–Buyer row, add ranking columns that show the buyer's name only on the allocated row.
-        # -------------------------------
-        display_df = pd.merge(allocated_df, ranking_df, on="Collection_Point", how="left")
+        # 7. Merge ranking info back into the candidate table (for display)
+        display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
         display_df["Best Buyer for CP"] = display_df.apply(
             lambda row: row["Buyer"] if row["Buyer"] == row["Best_Buyer"] else "", axis=1
         )
@@ -128,10 +103,7 @@ def main():
             lambda row: row["Buyer"] if row["Buyer"] == row["Third_Buyer"] else "", axis=1
         )
 
-        # -------------------------------
-        # 9. Final Display:
-        #    Select and rename columns as required.
-        # -------------------------------
+        # 8. Final Display: select and rename columns
         final_display = display_df[[
             "Collection_Point", "Buyer", 
             "Global_Yield_Display", "Global_Juice_Loss_Display",
