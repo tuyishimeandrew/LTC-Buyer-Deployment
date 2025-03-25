@@ -15,7 +15,6 @@ def compute_buyer_stats(buyer_df):
     total_fresh = last_3["Fresh_Purchased"].sum()
     total_dry = last_3["Dry_Output"].sum()
     global_yield = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
-
     latest_juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
     if not latest_juice_loss_row.empty:
         juice_loss_val = latest_juice_loss_row["Juice_Loss_Kasese"].values[0]
@@ -64,14 +63,31 @@ def main():
                 "Global_Juice_Loss": g_juice
             })
         global_stats_df = pd.DataFrame(global_list)
-        global_stats_df["Global_Yield_Display"] = global_stats_df["Global_Yield"].apply(
+        # Filter out buyers that don't meet the criteria
+        global_stats_df = global_stats_df[
+            (global_stats_df["Global_Yield"] >= 36) & (global_stats_df["Global_Juice_Loss"] <= 18)
+        ].copy()
+        
+        # Prepare display columns
+        global_stats_df["Yield three prior harvest(%)"] = global_stats_df["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        global_stats_df["Global_Juice_Loss_Display"] = global_stats_df["Global_Juice_Loss"].apply(
+        global_stats_df["Juice loss at Kasese(%)"] = global_stats_df["Global_Juice_Loss"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
-        # Compute CP-specific yield for each CP–Buyer pair
+        # Export button for each buyer's global performance
+        st.subheader("Buyer Global Performance")
+        st.dataframe(global_stats_df[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
+        csv_buyer_stats = global_stats_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Buyer Global Performance CSV",
+            data=csv_buyer_stats,
+            file_name="buyer_global_performance.csv",
+            mime="text/csv",
+        )
+        
+        # Compute CP-specific yield for each CP–Buyer pair using the original df
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
             "Dry_Output": "sum"
@@ -84,13 +100,8 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
-        # Merge global stats into CP stats by Buyer
-        candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="left")
-        # Filter candidates based on performance criteria:
-        # Global Yield must be at least 36% and Global Juice Loss no more than 18%
-        candidate_df = candidate_df[
-            (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
-        ].copy()
+        # Merge global stats into CP stats by Buyer so that only buyers meeting criteria are considered.
+        candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="inner")
         
         # For each CP, rank the candidates by CP_Yield (descending)
         ranking_list = []
@@ -121,34 +132,21 @@ def main():
         )
         final_display = display_df[[
             "Collection_Point", "Buyer", 
-            "Global_Yield_Display", "Global_Juice_Loss_Display",
+            "Yield three prior harvest(%)", "Juice loss at Kasese(%)",
             "CP_Yield_Display",
             "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
         ]].drop_duplicates().sort_values(by="Collection_Point")
         final_display.rename(columns={
-            "Global_Yield_Display": "Yield three prior harvest(%)",
-            "Global_Juice_Loss_Display": "Juice loss at Kasese(%)",
             "CP_Yield_Display": "CP Yield(%)"
         }, inplace=True)
         
         st.subheader("Global Buyer Performance by CP with Allocations")
         st.dataframe(final_display)
-        csv_global_allocation = final_display.to_csv(index=False).encode("utf-8")
+        csv_global = final_display.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="Download Global Allocation CSV",
-            data=csv_global_allocation,
+            data=csv_global,
             file_name="global_allocation.csv",
-            mime="text/csv",
-        )
-        
-        # New Export: Global performance per buyer
-        st.subheader("Global Buyer Performance Data")
-        st.dataframe(global_stats_df[["Buyer", "Global_Yield_Display", "Global_Juice_Loss_Display"]])
-        csv_global_stats = global_stats_df[["Buyer", "Global_Yield_Display", "Global_Juice_Loss_Display"]].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download Global Buyer Performance CSV",
-            data=csv_global_stats,
-            file_name="global_buyer_performance.csv",
             mime="text/csv",
         )
         
@@ -190,7 +188,7 @@ def main():
                 for idx, row in sorted_best.iterrows():
                     cp = row["Collection_Point"]
                     buyer = row["Buyer"]
-                    # Only assign if buyer is not already assigned and CP has fewer than 3 slots.
+                    # If buyer is not already assigned and this CP has less than 3, allocate.
                     if buyer not in assigned_buyers and len(allocation[cp]) < 3:
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
@@ -205,8 +203,9 @@ def main():
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
                 
-                # Step 4: Fallback – only use eligible buyers (those in candidate_df) to fill any CP with fewer than 3 slots.
-                fallback_candidates = candidate_df[~candidate_df["Buyer"].isin(assigned_buyers)].copy()
+                # Step 4: Fallback – for any CP still with fewer than 3, use buyers from global stats 
+                # (only allowed buyers are in global_stats_df) by highest global yield.
+                fallback_candidates = global_stats_df[~global_stats_df["Buyer"].isin(assigned_buyers)].copy()
                 fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
                 for cp in cp_list:
                     while len(allocation[cp]) < 3 and not fallback_candidates.empty:
