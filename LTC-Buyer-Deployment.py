@@ -60,10 +60,10 @@ def main():
             })
         global_stats_df = pd.DataFrame(global_list)
         global_stats_df["Global_Yield_Display"] = global_stats_df["Global_Yield"].apply(
-            lambda x: f"{x:.2f}%" if pd.notnull(x) and isinstance(x, (int, float)) else (x if pd.notnull(x) else "")
+            lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         global_stats_df["Global_Juice_Loss_Display"] = global_stats_df["Global_Juice_Loss"].apply(
-            lambda x: f"{x:.2f}%" if pd.notnull(x) and isinstance(x, (int, float)) else (x if pd.notnull(x) else "")
+            lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
         # Compute CP-specific yield for each CP–Buyer pair
@@ -76,7 +76,7 @@ def main():
                         if row["Fresh_Purchased"] > 0 else np.nan, axis=1
         )
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
-            lambda x: f"{x:.2f}%" if pd.notnull(x) and isinstance(x, (int, float)) else (x if pd.notnull(x) else "")
+            lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
         # Merge global stats into CP stats by Buyer
@@ -151,7 +151,7 @@ def main():
             sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
             sched_df = sched_df[sched_df["Date"].notnull()]
             
-            # For each unique date, perform allocation with promotion and fallback.
+            # For each date, perform allocation with promotions and fallback.
             allocation_results = []
             for dt in sched_df["Date"].unique():
                 # Get the CPs for that date.
@@ -174,12 +174,12 @@ def main():
                 for idx, row in sorted_best.iterrows():
                     cp = row["Collection_Point"]
                     buyer = row["Buyer"]
-                    # If buyer is not already assigned and this CP has fewer than 3 slots, allocate.
+                    # If buyer is not already assigned and this CP has less than 3, allocate.
                     if buyer not in assigned_buyers and len(allocation[cp]) < 3:
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
                 
-                # Step 3: Secondary allocation – fill CPs with < 3 slots using remaining candidate rows.
+                # Step 3: Secondary allocation – fill CPs with <3 slots using remaining candidate rows.
                 remaining_candidates = candidates_date[~candidates_date["Buyer"].isin(assigned_buyers)].copy()
                 remaining_candidates.sort_values(by="CP_Yield", ascending=False, inplace=True)
                 for idx, row in remaining_candidates.iterrows():
@@ -189,8 +189,7 @@ def main():
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
                 
-                # Step 4: Fallback – for any CP still with fewer than 3, fill using fallback candidates 
-                # (selected by highest Global Yield among those not allocated on that date).
+                # Step 4: Fallback – for any CP still with fewer than 3, use buyers from global stats (by highest global yield)
                 fallback_candidates = global_stats_df[~global_stats_df["Buyer"].isin(assigned_buyers)].copy()
                 fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
                 for cp in cp_list:
