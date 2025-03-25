@@ -10,6 +10,7 @@ def main():
         # -------------------------------
         # 1. Read Excel and rename columns
         # -------------------------------
+        # Assume row 5 has headers so we use header=4
         df = pd.read_excel(uploaded_file, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",        # Column A
@@ -23,9 +24,9 @@ def main():
 
         # -------------------------------
         # 2. Calculate Global Stats for each Buyer
+        #    - Global Yield: Using the last 3 valid harvests (if both Fresh and Dry are valid)
+        #    - Global Juice Loss: Most recent non-null value (multiplied by 100 to convert to %, rounded to 2 decimals)
         # -------------------------------
-        # Global Yield: from the last 3 valid harvests (if both Fresh and Dry are valid)
-        # Global Juice Loss: most recent non-null value (multiplied by 100 to convert to %, rounded to 2 decimals)
         global_stats = []
         grouped_buyer = df.groupby("Buyer")
         for buyer, buyer_df in grouped_buyer:
@@ -61,6 +62,7 @@ def main():
 
         # -------------------------------
         # 3. Compute CP-Specific Yield for each Buyer at each CP
+        #    CP_Yield = (sum of Dry_Output at CP for that buyer) / (sum of Fresh_Purchased at CP for that buyer) * 100
         # -------------------------------
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
@@ -82,6 +84,7 @@ def main():
         # -------------------------------
         # 5. Filter candidates based on global conditions:
         #    Only consider buyers with Global Yield >= 36% and Global Juice Loss <= 18%
+        #    (The CP yield is used only for allocation, not as a threshold.)
         # -------------------------------
         candidate_df = candidate_df[
             (candidate_df["Global_Yield"] >= 36) & (candidate_df["Global_Juice_Loss"] <= 18)
@@ -116,6 +119,10 @@ def main():
 
         # -------------------------------
         # 7. Create a Ranking DataFrame by CP based on allocation rounds:
+        #    For each CP, assign:
+        #      - Best Buyer for CP = Allocation_Round 1
+        #      - Second Best Buyer for CP = Allocation_Round 2
+        #      - Third Best Buyer for CP = Allocation_Round 3
         # -------------------------------
         ranking_list = []
         for cp, group in allocated_df.groupby("Collection_Point"):
@@ -133,6 +140,8 @@ def main():
 
         # -------------------------------
         # 8. Merge ranking info back into candidate table (for display):
+        #    For each CP–Buyer candidate row, add ranking columns that show the buyer's name
+        #    only on the allocated row.
         # -------------------------------
         display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
         display_df["Best Buyer for CP"] = display_df.apply(
@@ -147,6 +156,7 @@ def main():
 
         # -------------------------------
         # 9. Final Display:
+        #    Select and rename columns as required.
         # -------------------------------
         final_display = display_df[[
             "Collection_Point", "Buyer", 
