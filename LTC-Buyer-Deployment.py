@@ -83,7 +83,7 @@ def main():
         
         # For allocation, filter to buyers meeting thresholds:
         filtered_global_stats_df = global_performance_all[
-            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 18)
+            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 20)
         ].copy()
         
         # ===============================
