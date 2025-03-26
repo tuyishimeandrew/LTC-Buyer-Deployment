@@ -53,7 +53,7 @@ def main():
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
         df.sort_index(ascending=False, inplace=True)
         
-        # Compute global stats for each buyer (for all buyers)
+        # Compute global stats for all buyers (using all available data)
         global_list = []
         for buyer, bdf in df.groupby("Buyer"):
             g_yield, g_juice = compute_buyer_stats(bdf)
@@ -63,7 +63,7 @@ def main():
                 "Global_Juice_Loss": g_juice
             })
         global_performance_all = pd.DataFrame(global_list)
-        # Create display columns for all buyers
+        # Create display columns
         global_performance_all["Yield three prior harvest(%)"] = global_performance_all["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
@@ -81,13 +81,13 @@ def main():
             mime="text/csv",
         )
         
-        # For allocation, filter to buyers meeting thresholds:
+        # For allocation, only consider buyers meeting thresholds:
         filtered_global_stats_df = global_performance_all[
-            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 20)
+            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 18)
         ].copy()
         
         # ===============================
-        # PART 2: Allocation by CP
+        # PART 2: Allocation by CP (Display)
         # ===============================
         # Compute CP-specific yield per CP–Buyer pair from the original data.
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
@@ -101,10 +101,10 @@ def main():
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        # Only consider buyers from the filtered global pool for allocation.
+        # For display purposes, only consider buyers from the filtered pool.
         candidate_df = pd.merge(cp_stats, filtered_global_stats_df, on="Buyer", how="inner")
         
-        # For display: for each CP, identify best, second, and third by CP yield
+        # For each CP, rank the candidates by CP yield (descending)
         ranking_list = []
         for cp, group in candidate_df.groupby("Collection_Point"):
             group_sorted = group.sort_values(by="CP_Yield", ascending=False)
@@ -151,7 +151,7 @@ def main():
         )
         
         # ===============================
-        # PART 3: Per Date Allocation
+        # PART 3: Per Date Allocation with Dynamic Reallocation (Promotions)
         # ===============================
         if schedule_file is not None:
             sched_df = pd.read_excel(schedule_file)
@@ -165,38 +165,93 @@ def main():
             sched_df = sched_df[sched_df["Date"].notnull()]
             
             allocation_results = []
+            
             # Process each unique buying day
             for dt in sched_df["Date"].unique():
+                # Get CPs scheduled for the day.
                 cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
-                allocation = {cp: [] for cp in cp_list}
-                assigned_buyers = set()  # Ensure a buyer is not deployed twice
                 
-                # --- Primary Allocation per CP using CP-specific candidates ---
+                # Build candidate lists for each CP (from candidate_df), as lists of dictionaries
+                candidates_by_cp = {}
                 for cp in cp_list:
-                    cp_candidates = candidate_df[candidate_df["Collection_Point"] == cp].sort_values(by="CP_Yield", ascending=False)
-                    for _, row in cp_candidates.iterrows():
-                        buyer = row["Buyer"]
-                        if buyer not in assigned_buyers:
-                            allocation[cp].append(buyer)
-                        if len(allocation[cp]) == 3:
+                    df_cp = candidate_df[candidate_df["Collection_Point"] == cp]
+                    # Sort by CP_Yield descending
+                    candidates_by_cp[cp] = df_cp.sort_values(by="CP_Yield", ascending=False).to_dict("records")
+                
+                # Initialize assignment dictionary: each CP gets a list of assigned buyers.
+                # Each assigned entry is a tuple: (Buyer, CP_Yield from that candidate row)
+                assignment = {cp: [] for cp in cp_list}
+                # Also maintain a global mapping: buyer -> (CP, CP_Yield)
+                assigned_buyers = {}
+                
+                # --- Primary Allocation ---
+                for cp in cp_list:
+                    for candidate in candidates_by_cp[cp]:
+                        buyer = candidate["Buyer"]
+                        if buyer not in assigned_buyers and len(assignment[cp]) < 3:
+                            assignment[cp].append((buyer, candidate["CP_Yield"]))
+                            assigned_buyers[buyer] = (cp, candidate["CP_Yield"])
+                        if len(assignment[cp]) == 3:
                             break
                 
-                # --- Fallback Allocation using remaining qualified buyers (global yield) ---
-                fallback_candidates = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned_buyers)].copy()
+                # --- Dynamic Reallocation (Promotion) ---
+                changed = True
+                while changed:
+                    changed = False
+                    # Iterate over each CP and its candidate list
+                    for cp in cp_list:
+                        for candidate in candidates_by_cp[cp]:
+                            buyer = candidate["Buyer"]
+                            cand_yield = candidate["CP_Yield"]
+                            # If buyer is already assigned elsewhere...
+                            if buyer in assigned_buyers:
+                                current_cp, current_yield = assigned_buyers[buyer]
+                                # And if candidate row from current CP shows a higher CP_Yield than the one in the current assignment...
+                                if current_cp != cp and cand_yield > current_yield:
+                                    # Reassign buyer from current_cp to cp
+                                    # Remove buyer from the old CP assignment:
+                                    assignment[current_cp] = [entry for entry in assignment[current_cp] if entry[0] != buyer]
+                                    # Add buyer to the new CP at the top (as best candidate)
+                                    assignment[cp].insert(0, (buyer, cand_yield))
+                                    assigned_buyers[buyer] = (cp, cand_yield)
+                                    changed = True
+                                    # Now, try to refill the vacancy in the old CP from its candidate list
+                                    for cand in candidates_by_cp[current_cp]:
+                                        if cand["Buyer"] not in assigned_buyers and len(assignment[current_cp]) < 3:
+                                            assignment[current_cp].append((cand["Buyer"], cand["CP_Yield"]))
+                                            assigned_buyers[cand["Buyer"]] = (current_cp, cand["CP_Yield"])
+                                            break
+                                    # Once a change is made for this candidate, break to re‐start the loop
+                                    break
+                            else:
+                                # If buyer is not assigned and there is a vacancy in cp, assign candidate.
+                                if len(assignment[cp]) < 3:
+                                    assignment[cp].append((buyer, cand_yield))
+                                    assigned_buyers[buyer] = (cp, cand_yield)
+                                    changed = True
+                                    break
+                        if changed:
+                            # If any change occurred, restart checking from the first CP.
+                            break
+                
+                # --- Fallback Allocation ---
+                # For any CP with fewer than 3 assigned buyers, fill slots from the fallback pool.
+                fallback_candidates = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned_buyers.keys())].copy()
                 fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
                 for cp in cp_list:
-                    while len(allocation[cp]) < 3 and not fallback_candidates.empty:
+                    while len(assignment[cp]) < 3 and not fallback_candidates.empty:
                         candidate_row = fallback_candidates.iloc[0]
                         buyer = candidate_row["Buyer"]
-                        allocation[cp].append(buyer)
-                        assigned_buyers.add(buyer)
+                        # Use Global_Yield as the surrogate yield value for fallback.
+                        assignment[cp].append((buyer, candidate_row["Global_Yield"]))
+                        assigned_buyers[buyer] = (cp, candidate_row["Global_Yield"])
                         fallback_candidates = fallback_candidates.drop(fallback_candidates.index[0])
                 
-                # Record allocation for each CP on this day.
+                # Record final allocation for each CP on this day.
                 for cp in cp_list:
-                    best = allocation[cp][0] if len(allocation[cp]) >= 1 else ""
-                    second = allocation[cp][1] if len(allocation[cp]) >= 2 else ""
-                    third = allocation[cp][2] if len(allocation[cp]) >= 3 else ""
+                    best = assignment[cp][0][0] if len(assignment[cp]) >= 1 else ""
+                    second = assignment[cp][1][0] if len(assignment[cp]) >= 2 else ""
+                    third = assignment[cp][2][0] if len(assignment[cp]) >= 3 else ""
                     allocation_results.append({
                         "Date": dt.date(),
                         "Collection_Point": cp,
