@@ -31,7 +31,7 @@ def main():
     st.markdown("### Upload Buyer Performance Excel")
     buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
     
-    st.markdown("### Upload CP Schedule Excel (for per date allocation)")
+    st.markdown("### Upload CP Schedule Excel")
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
     
     if buyer_file is not None:
