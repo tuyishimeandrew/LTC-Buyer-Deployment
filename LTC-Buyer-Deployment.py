@@ -35,9 +35,9 @@ def main():
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
     
     if buyer_file is not None:
-        # ===============================
+        # -------------------------------
         # PART 1: Buyer Global Performance (All Buyers)
-        # ===============================
+        # -------------------------------
         df = pd.read_excel(buyer_file, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",         # Column A
@@ -79,14 +79,14 @@ def main():
             mime="text/csv",
         )
         
-        # For allocation purposes, filter to only qualified buyers.
+        # For allocation, only consider qualified buyers.
         filtered_global_stats_df = global_performance_all[
             (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 18)
         ].copy()
         
-        # ===============================
+        # -------------------------------
         # PART 2: Allocation by CP (Display)
-        # ===============================
+        # -------------------------------
         cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
             "Fresh_Purchased": "sum",
             "Dry_Output": "sum"
@@ -98,10 +98,10 @@ def main():
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        # Only consider buyers in the filtered pool for allocation.
+        # For display purposes, only consider buyers in the filtered pool.
         candidate_df = pd.merge(cp_stats, filtered_global_stats_df, on="Buyer", how="inner")
         
-        # For display only: rank candidates per CP by CP yield.
+        # For each CP, rank candidates by CP yield (descending) for display.
         ranking_list = []
         for cp, group in candidate_df.groupby("Collection_Point"):
             group_sorted = group.sort_values(by="CP_Yield", ascending=False)
@@ -146,12 +146,12 @@ def main():
             mime="text/csv",
         )
         
-        # ===============================
-        # PART 3: Per Date Allocation with Dynamic Reallocation (No Duplication)
-        # ===============================
+        # -------------------------------
+        # PART 3: Per Date Allocation with Dynamic Reallocation and Fallback for Blanks
+        # -------------------------------
         if schedule_file is not None:
             sched_df = pd.read_excel(schedule_file)
-            # Assume Column A is Date and Column D is CP.
+            # Assume: Column A is Date and Column D is CP.
             sched_df.rename(columns={
                 sched_df.columns[0]: "Date",
                 sched_df.columns[3]: "CP"
@@ -161,11 +161,11 @@ def main():
             sched_df = sched_df[sched_df["Date"].notnull()]
             
             allocation_results = []
-            # Process allocation for each unique buying day.
+            # Process each unique buying day.
             for dt in sched_df["Date"].unique():
                 cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
                 
-                # Build candidate lists for each CP (from candidate_df) sorted by CP_Yield descending.
+                # Build candidate lists for each CP (from candidate_df), sorted by CP_Yield descending.
                 candidates_by_cp = {}
                 for cp in cp_list:
                     df_cp = candidate_df[candidate_df["Collection_Point"] == cp]
@@ -173,51 +173,47 @@ def main():
                 
                 # Initialize assignment for each CP as an empty list.
                 assignment = {cp: [] for cp in cp_list}
-                # Set of buyers already assigned (across all CPs for this day).
+                # Track buyers already assigned on this day.
                 assigned_global = set()
                 
-                # We'll fill three rounds (best, second, third) per CP.
+                # Process allocation in three rounds: round 0 (best), round 1 (second best), round 2 (third best).
+                # This ensures priority is given first to filling the best slot, then the second, then the third.
                 for round_no in range(3):
-                    # For each CP, propose a candidate for this round.
-                    proposals = {}  # mapping CP -> (buyer, candidate_CP_Yield)
+                    # Proposals: For each CP, select a candidate not yet assigned.
+                    proposals = {}  # cp -> (buyer, candidate_CP_Yield)
                     for cp in cp_list:
-                        # Skip if CP already has a candidate in this round.
                         if len(assignment[cp]) > round_no:
-                            continue
-                        # Find the first candidate in cp's list not already assigned.
+                            continue  # already filled for this round
                         candidate_found = None
                         for candidate in candidates_by_cp.get(cp, []):
                             if candidate["Buyer"] not in assigned_global:
                                 candidate_found = (candidate["Buyer"], candidate["CP_Yield"])
                                 break
                         proposals[cp] = candidate_found  # may be None if no candidate available
-                    
-                    # Resolve conflicts: if the same buyer appears for multiple CPs in this round,
-                    # assign him only to the CP where his CP_Yield is highest.
-                    # Build reverse mapping: buyer -> list of (cp, candidate_yield)
+                        
+                    # Resolve conflicts: if a buyer is proposed for more than one CP in this round,
+                    # keep the proposal with the highest CP_Yield and remove the others.
                     buyer_proposals = {}
                     for cp, proposal in proposals.items():
                         if proposal is not None:
                             buyer = proposal[0]
                             buyer_proposals.setdefault(buyer, []).append((cp, proposal[1]))
-                    
-                    # For each buyer that appears more than once, select the CP with the highest yield.
                     for buyer, cp_list_for_buyer in buyer_proposals.items():
                         if len(cp_list_for_buyer) > 1:
                             chosen_cp = max(cp_list_for_buyer, key=lambda x: x[1])[0]
-                            # For each CP where this buyer was proposed but is not chosen, remove the proposal.
                             for cp, _ in cp_list_for_buyer:
                                 if cp != chosen_cp:
                                     proposals[cp] = None
                                     
-                    # Now, assign proposals where available.
+                    # Assign the resolved proposals.
                     for cp in cp_list:
                         if proposals.get(cp) is not None:
                             buyer, _ = proposals[cp]
                             assignment[cp].append(buyer)
                             assigned_global.add(buyer)
                     
-                    # For any CP that still does not have a candidate in this round, use fallback:
+                    # Fallback: For any CP that still does not have a candidate in this round,
+                    # fill from the remaining general pool (prioritizing second best before third).
                     fallback_pool = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned_global)]
                     fallback_pool = fallback_pool.sort_values(by="Global_Yield", ascending=False)
                     for cp in cp_list:
