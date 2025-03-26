@@ -26,7 +26,7 @@ def compute_buyer_stats(buyer_df):
     return global_yield, juice_loss_val
 
 def main():
-    st.title("LTC Buyer Performance Allocation")
+    st.title("LTC Buyer CP Deployment")
 
     st.markdown("### Upload Buyer Performance Excel")
     buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
