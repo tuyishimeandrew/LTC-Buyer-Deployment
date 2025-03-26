@@ -36,7 +36,7 @@ def main():
     
     if buyer_file is not None:
         # ===============================
-        # PART 1: Global Buyer Performance
+        # PART 1: Buyer Global Performance (All Buyers)
         # ===============================
         # Read buyer performance file (assume headers on row 5, so header=4)
         df = pd.read_excel(buyer_file, header=4)
@@ -53,7 +53,7 @@ def main():
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
         df.sort_index(ascending=False, inplace=True)
         
-        # Compute global stats for each buyer (using all their data)
+        # Compute global stats for each buyer (for all buyers)
         global_list = []
         for buyer, bdf in df.groupby("Buyer"):
             g_yield, g_juice = compute_buyer_stats(bdf)
@@ -62,28 +62,29 @@ def main():
                 "Global_Yield": g_yield,
                 "Global_Juice_Loss": g_juice
             })
-        global_stats_df = pd.DataFrame(global_list)
-        # Filter out buyers who do not meet threshold criteria
-        global_stats_df = global_stats_df[
-            (global_stats_df["Global_Yield"] >= 36) & (global_stats_df["Global_Juice_Loss"] <= 18)
-        ].copy()
-        # Prepare display columns
-        global_stats_df["Yield three prior harvest(%)"] = global_stats_df["Global_Yield"].apply(
+        global_performance_all = pd.DataFrame(global_list)
+        # Create display columns for all buyers
+        global_performance_all["Yield three prior harvest(%)"] = global_performance_all["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        global_stats_df["Juice loss at Kasese(%)"] = global_stats_df["Global_Juice_Loss"].apply(
+        global_performance_all["Juice loss at Kasese(%)"] = global_performance_all["Global_Juice_Loss"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
-        st.subheader("Buyer Global Performance")
-        st.dataframe(global_stats_df[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
-        csv_buyer_stats = global_stats_df.to_csv(index=False).encode("utf-8")
+        st.subheader("Buyer Global Performance (All Buyers)")
+        st.dataframe(global_performance_all[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
+        csv_buyer_stats = global_performance_all.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="Download Buyer Global Performance CSV",
             data=csv_buyer_stats,
             file_name="buyer_global_performance.csv",
             mime="text/csv",
         )
+        
+        # For allocation, filter to buyers meeting thresholds:
+        filtered_global_stats_df = global_performance_all[
+            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 18)
+        ].copy()
         
         # ===============================
         # PART 2: Allocation by CP
@@ -100,8 +101,8 @@ def main():
         cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
-        # Only consider buyers from the filtered global pool.
-        candidate_df = pd.merge(cp_stats, global_stats_df, on="Buyer", how="inner")
+        # Only consider buyers from the filtered global pool for allocation.
+        candidate_df = pd.merge(cp_stats, filtered_global_stats_df, on="Buyer", how="inner")
         
         # For display: for each CP, identify best, second, and third by CP yield
         ranking_list = []
@@ -120,7 +121,6 @@ def main():
         
         # Merge ranking info into candidate_df for display
         display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
-        # Only show the buyer name in ranking column if it matches
         display_df["Best Buyer for CP"] = display_df.apply(
             lambda row: row["Buyer"] if row["Buyer"] == row["Best Buyer for CP"] else "", axis=1
         )
@@ -153,7 +153,6 @@ def main():
         # ===============================
         # PART 3: Per Date Allocation
         # ===============================
-        # Only proceed if a schedule file is uploaded.
         if schedule_file is not None:
             sched_df = pd.read_excel(schedule_file)
             # Assume: Column A is Date and Column D is CP.
@@ -168,38 +167,30 @@ def main():
             allocation_results = []
             # Process each unique buying day
             for dt in sched_df["Date"].unique():
-                # List of CPs scheduled for that day
                 cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
-                # Initialize allocation dictionary: each CP has an empty list
                 allocation = {cp: [] for cp in cp_list}
-                assigned_buyers = set()  # to ensure a buyer is not deployed twice
+                assigned_buyers = set()  # Ensure a buyer is not deployed twice
                 
                 # --- Primary Allocation per CP using CP-specific candidates ---
                 for cp in cp_list:
-                    # Candidates from candidate_df whose Collection_Point is this CP, sorted by CP yield descending
                     cp_candidates = candidate_df[candidate_df["Collection_Point"] == cp].sort_values(by="CP_Yield", ascending=False)
                     for _, row in cp_candidates.iterrows():
                         buyer = row["Buyer"]
                         if buyer not in assigned_buyers:
                             allocation[cp].append(buyer)
                         if len(allocation[cp]) == 3:
-                            break  # move to next CP
+                            break
                 
                 # --- Fallback Allocation using remaining qualified buyers (global yield) ---
-                # For each CP, if fewer than 3 buyers allocated, fill from the global pool (filtered global_stats_df)
-                fallback_candidates = global_stats_df[~global_stats_df["Buyer"].isin(assigned_buyers)].copy()
+                fallback_candidates = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned_buyers)].copy()
                 fallback_candidates.sort_values(by="Global_Yield", ascending=False, inplace=True)
                 for cp in cp_list:
                     while len(allocation[cp]) < 3 and not fallback_candidates.empty:
-                        # Select the best fallback candidate
                         candidate_row = fallback_candidates.iloc[0]
                         buyer = candidate_row["Buyer"]
                         allocation[cp].append(buyer)
                         assigned_buyers.add(buyer)
                         fallback_candidates = fallback_candidates.drop(fallback_candidates.index[0])
-                
-                # Note: This process ensures that if a CP had no qualifying candidate, it is filled
-                # from the remaining qualified (global) pool; priority is given first to CP yield and then to global yield.
                 
                 # Record allocation for each CP on this day.
                 for cp in cp_list:
