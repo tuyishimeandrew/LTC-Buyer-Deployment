@@ -69,7 +69,7 @@ def main():
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
         
-        st.subheader("Buyer Global Performance (All Buyers)")
+        st.subheader("Buyer Global Performance")
         st.dataframe(global_performance_all[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
         csv_buyer_stats = global_performance_all.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -136,7 +136,7 @@ def main():
             "CP_Yield_Display": "CP Yield(%)"
         }, inplace=True)
         
-        st.subheader("Global Buyer Performance by CP with Optional Backups")
+        st.subheader("Global Buyer Performance by CP")
         st.dataframe(final_display)
         csv_global = final_display.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -239,7 +239,7 @@ def main():
             
             allocation_df = pd.DataFrame(allocation_results)
             allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
-            st.subheader("Buyer Allocation per CP per Date")
+            st.subheader("Buyer Allocation according to CP schedule")
             st.dataframe(allocation_df)
             csv_date = allocation_df.to_csv(index=False).encode("utf-8")
             st.download_button(
