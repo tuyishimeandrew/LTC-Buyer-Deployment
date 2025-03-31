@@ -126,7 +126,7 @@ def main():
         display_df["Third Best Buyer for CP"] = display_df.apply(
             lambda row: row["Buyer"] if row["Buyer"] == row["Third Best Buyer for CP"] else "", axis=1
         )
-        final_display = display_df[[
+        final_display = display_df[[ 
             "Collection_Point", "Buyer", 
             "Yield three prior harvest(%)", "Juice loss at Kasese(%)",
             "CP_Yield_Display",
@@ -166,10 +166,12 @@ def main():
                 cp_list = sched_df[sched_df["Date"] == dt]["CP"].unique()
                 
                 # Build candidate lists for each CP (from candidate_df), sorted by CP_Yield descending.
+                # Drop duplicate buyers per CP so that each buyer appears only once.
                 candidates_by_cp = {}
                 for cp in cp_list:
                     df_cp = candidate_df[candidate_df["Collection_Point"] == cp]
-                    candidates_by_cp[cp] = df_cp.sort_values(by="CP_Yield", ascending=False).to_dict("records")
+                    df_cp = df_cp.sort_values(by="CP_Yield", ascending=False).drop_duplicates(subset="Buyer", keep="first")
+                    candidates_by_cp[cp] = df_cp.to_dict("records")
                 
                 # Initialize assignment for each CP as an empty list.
                 assignment = {cp: [] for cp in cp_list}
@@ -177,7 +179,6 @@ def main():
                 assigned_global = set()
                 
                 # Process allocation in three rounds: round 0 (best), round 1 (second best), round 2 (third best).
-                # This ensures priority is given first to filling the best slot, then the second, then the third.
                 for round_no in range(3):
                     # Proposals: For each CP, select a candidate not yet assigned.
                     proposals = {}  # cp -> (buyer, candidate_CP_Yield)
@@ -213,7 +214,7 @@ def main():
                             assigned_global.add(buyer)
                     
                     # Fallback: For any CP that still does not have a candidate in this round,
-                    # fill from the remaining general pool (prioritizing second best before third).
+                    # fill from the remaining general pool (sorted by Global_Yield), ensuring no duplicates.
                     fallback_pool = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned_global)]
                     fallback_pool = fallback_pool.sort_values(by="Global_Yield", ascending=False)
                     for cp in cp_list:
