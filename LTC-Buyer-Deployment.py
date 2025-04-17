@@ -39,9 +39,6 @@ def main():
         # PART 1: Buyer Global Performance (All Buyers)
         # -------------------------------
         df = pd.read_excel(buyer_file, header=4)
-        # --- FIX: Remove newline characters and extra spaces from column names ---
-        df.columns = df.columns.str.replace('\n', ' ').str.strip()
-        
         df.rename(columns={
             df.columns[0]: "Harvest_ID",         # Column A
             df.columns[1]: "Buyer",              # Column B
