@@ -57,7 +57,7 @@ def main():
         df.columns[3]: "Collection_Point",
         df.columns[4]: "Fresh_Purchased",
         df.columns[7]: "Juice_Loss_Kasese",
-        df.columns[15]: "Dry_Output",
+        df.columns[16]: "Dry_Output",
     }
     df.rename(columns=rename_map, inplace=True)
 
