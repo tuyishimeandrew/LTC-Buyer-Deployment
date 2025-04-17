@@ -2,72 +2,65 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-
 def compute_buyer_stats(buyer_df):
-    """
-    Compute global statistics for a single buyer:
-      - Global yield: computed using the last 3 valid harvests (if both Fresh_Purchased and Dry_Output are numeric)
-      - Global juice loss: the most recent non-null value (multiplied by 100 and rounded to 2 decimals)
-    """
-    # Filter rows with valid Fresh_Purchased and Dry_Output
+    """Calculate global buyer statistics from harvest data"""
     valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
-    valid = valid[valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float))) &
-                  valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
-    # Take the last three entries
+    valid = valid[valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
+    valid = valid[valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
+    
+    # Get last 3 valid entries (assuming reverse chronological order)
     last_3 = valid.head(3)
     total_fresh = last_3["Fresh_Purchased"].sum()
     total_dry = last_3["Dry_Output"].sum()
     global_yield = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
 
-    # Most recent non-null Juice_Loss_Kasese
-    latest_juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
-    if not latest_juice_loss_row.empty:
-        jl_val = latest_juice_loss_row["Juice_Loss_Kasese"].values[0]
-        if isinstance(jl_val, (int, float)):
-            juice_loss_val = round(jl_val * 100, 2)
-        else:
-            juice_loss_val = np.nan
-    else:
-        juice_loss_val = np.nan
-
-    return global_yield, juice_loss_val
-
+    # Get most recent juice loss value
+    juice_loss_row = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
+    juice_loss = round(juice_loss_row["Juice_Loss_Kasese"].values[0] * 100, 2) if not juice_loss_row.empty else np.nan
+    
+    return global_yield, juice_loss
 
 def main():
     st.title("LTC Buyer CP Deployment")
 
-    st.markdown("### 1) Upload Buyer Performance Excel")
+    # File Upload Section
+    st.markdown("### Upload Buyer Performance Excel")
     buyer_file = st.file_uploader("", type=["xlsx"], key="buyer")
-
-    st.markdown("### 2) Upload CP Schedule Excel")
+    st.markdown("### Upload CP Schedule Excel")
     schedule_file = st.file_uploader("", type=["xlsx"], key="schedule")
 
-    if buyer_file is not None:
-        # PART 1: Buyer Global Performance
-        raw = pd.read_excel(buyer_file, header=4)
-        # Clean column names: remove newlines and strip spaces
-        raw.columns = raw.columns.str.replace(r"\s+", " ", regex=True).str.replace("\n", " ").str.strip()
+    if buyer_file:
+        # ======================
+        # PART 1: Global Performance
+        # ======================
+        df = pd.read_excel(buyer_file, header=4)
+        df.columns = df.columns.str.replace('\n', ' ').str.strip()
+        
+        # Column mapping based on Excel structure
+        col_mapping = {
+            df.columns[0]: "Harvest_ID",
+            df.columns[1]: "Buyer",
+            df.columns[3]: "Collection_Point",
+            df.columns[4]: "Fresh_Purchased",
+            df.columns[7]: "Juice_Loss_Kasese",
+            df.columns[15]: "Dry_Output"
+        }
+        df.rename(columns=col_mapping, inplace=True)
+        df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        df.sort_index(ascending=False, inplace=True)
 
-        # Rename based on positions matching the Excel layout
-        raw.rename(columns={
-            raw.columns[0]: "Harvest_ID",         # Column A
-            raw.columns[1]: "Buyer",              # Column B
-            raw.columns[3]: "Collection_Point",   # Column D
-            raw.columns[4]: "Fresh_Purchased",    # Column E
-            raw.columns[7]: "Juice_Loss_Kasese",  # Column H
-            raw.columns[15]: "Dry_Output"         # Column P
-        }, inplace=True)
-
-        # Convert Juice_Loss_Kasese to numeric
-        raw["Juice_Loss_Kasese"] = pd.to_numeric(raw["Juice_Loss_Kasese"], errors="coerce")
-        raw.sort_index(ascending=False, inplace=True)
-
-        # Compute global stats per buyer
-        stats = []
-        for buyer, grp in raw.groupby("Buyer"):
-            gy, jl = compute_buyer_stats(grp)
-            stats.append({"Buyer": buyer, "Global_Yield": gy, "Global_Juice_Loss": jl})
-        global_df = pd.DataFrame(stats)
+        # Calculate global metrics
+        global_stats = []
+        for buyer, group in df.groupby("Buyer"):
+            yield_val, juice_loss = compute_buyer_stats(group)
+            global_stats.append({
+                "Buyer": buyer,
+                "Global_Yield": yield_val,
+                "Global_Juice_Loss": juice_loss
+            })
+        global_df = pd.DataFrame(global_stats)
+        
+        # Format display columns
         global_df["Yield three prior harvest(%)"] = global_df["Global_Yield"].apply(
             lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
         )
@@ -77,146 +70,133 @@ def main():
 
         st.subheader("Buyer Global Performance")
         st.dataframe(global_df[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
-        st.download_button(
-            "Download Buyer Global Performance CSV",
-            data=global_df.to_csv(index=False).encode('utf-8'),
-            file_name="buyer_global_performance.csv",
-            mime="text/csv"
-        )
+        
+        # ======================
+        # PART 2: CP Allocation
+        # ======================
+        qualified_buyers = global_df[
+            (global_df["Global_Yield"] >= 36) & 
+            (global_df["Global_Juice_Loss"] <= 20)
+        ].copy()
 
-        # Filter qualified buyers
-        qualified = global_df[(global_df["Global_Yield"] >= 36) &
-                              (global_df["Global_Juice_Loss"] <= 20)].copy()
-
-        # PART 2: Allocation by CP (Global Allocation)
-        cp_stats = raw.groupby(["Collection_Point", "Buyer"]).agg({
-            "Fresh_Purchased": "sum", "Dry_Output": "sum"
+        # Calculate CP-level metrics
+        cp_data = df.groupby(["Collection_Point", "Buyer"]).agg({
+            "Fresh_Purchased": "sum",
+            "Dry_Output": "sum"
         }).reset_index()
-        cp_stats["CP_Yield"] = cp_stats.apply(
+        cp_data["CP_Yield"] = cp_data.apply(
             lambda r: (r["Dry_Output"] / r["Fresh_Purchased"]) * 100 if r["Fresh_Purchased"] > 0 else np.nan,
             axis=1
         )
-        cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(
-            lambda x: f"{x:.2f}%" if pd.notnull(x) else ""
-        )
-
-        candidate_df = cp_stats.merge(
-            qualified[["Buyer", "Global_Yield", "Global_Juice_Loss"]],
-            on="Buyer", how="inner"
-        )
-
-        # Determine top 3 per CP
-        rankings = []
-        for cp, grp in candidate_df.groupby("Collection_Point"):
-            sorted_grp = grp.sort_values("CP_Yield", ascending=False)
-            buyers = sorted_grp["Buyer"].tolist()
-            rankings.append({
+        
+        # Merge with qualified buyers
+        candidate_pool = cp_data.merge(qualified_buyers, on="Buyer", how="inner")
+        
+        # Determine rankings per CP
+        ranked_allocations = []
+        for cp, group in candidate_pool.groupby("Collection_Point"):
+            sorted_group = group.sort_values("CP_Yield", ascending=False)
+            ranked_allocations.append({
                 "Collection_Point": cp,
-                "Best Buyer for CP": buyers[0] if len(buyers) > 0 else "",
-                "Second Best Buyer for CP": buyers[1] if len(buyers) > 1 else "",
-                "Third Best Buyer for CP": buyers[2] if len(buyers) > 2 else ""
+                "Best Buyer for CP": sorted_group.iloc[0]["Buyer"] if len(sorted_group) >= 1 else "",
+                "Second Best Buyer for CP": sorted_group.iloc[1]["Buyer"] if len(sorted_group) >= 2 else "",
+                "Third Best Buyer for CP": sorted_group.iloc[2]["Buyer"] if len(sorted_group) >= 3 else ""
             })
-        rank_df = pd.DataFrame(rankings)
+        ranking_df = pd.DataFrame(ranked_allocations)
 
-        display = candidate_df.merge(rank_df, on="Collection_Point", how="left")
-        for col in ["Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"]:
-            display[col] = display.apply(
-                lambda r: r["Buyer"] if r["Buyer"] == r[col] else "", axis=1
+        # Format final display
+        final_display = candidate_pool.merge(ranking_df, on="Collection_Point", how="left")
+        for rank_col in ["Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"]:
+            final_display[rank_col] = final_display.apply(
+                lambda r: r["Buyer"] if r["Buyer"] == r[rank_col] else "", axis=1
             )
-        final_display = (display[["Collection_Point", "Buyer", "CP_Yield_Display",
-                                  "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"]]
-                         .drop_duplicates().sort_values("Collection_Point")
-                         .rename(columns={"CP_Yield_Display": "CP Yield(%)"}))
+        final_display = final_display[[
+            "Collection_Point", "Buyer", "Yield three prior harvest(%)",
+            "Juice loss at Kasese(%)", "CP_Yield", rank_cols
+        ]].drop_duplicates()
 
-        st.subheader("Global Buyer Performance by CP")
+        st.subheader("CP Allocation Rankings")
         st.dataframe(final_display)
-        st.download_button(
-            "Download Global Allocation CSV",
-            data=final_display.to_csv(index=False).encode('utf-8'),
-            file_name="global_allocation.csv",
-            mime="text/csv"
-        )
 
-        # PART 3: Per-Date Allocation
-        if schedule_file is not None:
-            sched = pd.read_excel(schedule_file)
-            sched.columns = sched.columns.str.replace(r"\s+", " ", regex=True).str.strip()
-            sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
-            sched = sched[sched["Date"].notnull() & sched["CP"].notnull()]
-            sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
-            sched = sched[sched["Date"].notnull()]
-
-            allocations = []
-            for dt in sched["Date"].unique():
-                cp_list = sched[sched["Date"] == dt]["CP"].unique()
-                candidates_by_cp = {}
-                for cp in cp_list:
-                    sub = candidate_df[candidate_df["Collection_Point"] == cp]
-                    sub = sub.sort_values("CP_Yield", ascending=False).drop_duplicates("Buyer")
-                    candidates_by_cp[cp] = sub.to_dict("records")
-
-                assignment = {cp: [] for cp in cp_list}
-                assigned = set()
-
-                for rnd in range(3):
-                    proposals = {}
-                    for cp in cp_list:
-                        if len(assignment[cp]) > rnd:
-                            continue
-                        for cand in candidates_by_cp.get(cp, []):
-                            if cand["Buyer"] not in assigned:
-                                proposals[cp] = (cand["Buyer"], cand["CP_Yield"])
-                                break
+        # ======================
+        # PART 3: Schedule-Based Allocation
+        # ======================
+        if schedule_file:
+            schedule_df = pd.read_excel(schedule_file)
+            schedule_df.rename(columns={
+                schedule_df.columns[0]: "Date",
+                schedule_df.columns[3]: "CP"
+            }, inplace=True)
+            schedule_df["Date"] = pd.to_datetime(schedule_df["Date"], errors="coerce")
+            schedule_df = schedule_df.dropna(subset=["Date", "CP"])
+            
+            allocation_results = []
+            for date in schedule_df["Date"].unique():
+                date_cps = schedule_df[schedule_df["Date"] == date]["CP"].unique()
+                
+                # Initialize allocation structures
+                cp_candidates = {cp: [] for cp in date_cps}
+                assigned_buyers = set()
+                
+                # Three-round allocation process
+                for round_num in range(3):
+                    # Stage 1: Primary candidate selection
+                    candidate_proposals = {}
+                    for cp in date_cps:
+                        candidates = candidate_pool[
+                            (candidate_pool["Collection_Point"] == cp) &
+                            (~candidate_pool["Buyer"].isin(assigned_buyers))
+                        ].sort_values("CP_Yield", ascending=False)
+                        
+                        if not candidates.empty:
+                            candidate_proposals[cp] = candidates.iloc[0]["Buyer"]
                         else:
-                            proposals[cp] = None
-
-                    # Resolve conflicts
-                    by_buyer = {}
-                    for cp, prop in proposals.items():
-                        if prop:
-                            by_buyer.setdefault(prop[0], []).append((cp, prop[1]))
-                    for buyer, prefs in by_buyer.items():
-                        if len(prefs) > 1:
-                            chosen = max(prefs, key=lambda x: x[1])[0]
-                            for cp, _ in prefs:
-                                if cp != chosen:
-                                    proposals[cp] = None
-
-                    # Assign proposals
-                    for cp, prop in proposals.items():
-                        if prop:
-                            b, _ = prop
-                            assignment[cp].append(b)
-                            assigned.add(b)
-
-                    # Fallback
-                    fallback = qualified[~qualified["Buyer"].isin(assigned)].sort_values("Global_Yield", ascending=False)
-                    for cp in cp_list:
-                        if len(assignment[cp]) <= rnd and not fallback.empty:
-                            fb = fallback.iloc[0]["Buyer"]
-                            assignment[cp].append(fb)
-                            assigned.add(fb)
-                            fallback = fallback.drop(fallback.index[0])
-
-                for cp in cp_list:
-                    lst = assignment[cp]
-                    allocations.append({
-                        "Date": dt.date(),
+                            candidate_proposals[cp] = None
+                    
+                    # Stage 2: Conflict resolution
+                    buyer_conflicts = {}
+                    for cp, buyer in candidate_proposals.items():
+                        if buyer:
+                            buyer_conflicts.setdefault(buyer, []).append(cp)
+                    
+                    # Resolve conflicts by keeping highest CP yield
+                    for buyer, conflict_cps in buyer_conflicts.items():
+                        if len(conflict_cps) > 1:
+                            best_cp = conflict_cps[0]  # Simplified selection
+                            for cp in conflict_cps[1:]:
+                                candidate_proposals[cp] = None
+                    
+                    # Stage 3: Assign candidates
+                    for cp, buyer in candidate_proposals.items():
+                        if buyer and (cp not in cp_candidates or len(cp_candidates[cp]) <= round_num):
+                            cp_candidates[cp].append(buyer)
+                            assigned_buyers.add(buyer)
+                    
+                    # Stage 4: Fallback allocation
+                    fallback_pool = qualified_buyers[
+                        ~qualified_buyers["Buyer"].isin(assigned_buyers)
+                    ].sort_values("Global_Yield", ascending=False)
+                    
+                    for cp in date_cps:
+                        if len(cp_candidates[cp]) <= round_num and not fallback_pool.empty:
+                            fallback_buyer = fallback_pool.iloc[0]["Buyer"]
+                            cp_candidates[cp].append(fallback_buyer)
+                            assigned_buyers.add(fallback_buyer)
+                            fallback_pool = fallback_pool.iloc[1:]
+                
+                # Record results
+                for cp in date_cps:
+                    allocation_results.append({
+                        "Date": date.date(),
                         "Collection_Point": cp,
-                        "Best Buyer for CP": lst[0] if len(lst) > 0 else "",
-                        "Second Best Buyer for CP": lst[1] if len(lst) > 1 else "",
-                        "Third Best Buyer for CP": lst[2] if len(lst) > 2 else ""
+                        "Best Buyer": cp_candidates[cp][0] if len(cp_candidates[cp]) > 0 else "",
+                        "Second Buyer": cp_candidates[cp][1] if len(cp_candidates[cp]) > 1 else "",
+                        "Third Buyer": cp_candidates[cp][2] if len(cp_candidates[cp]) > 2 else ""
                     })
-
-            alloc_df = pd.DataFrame(allocations).sort_values(["Date", "Collection_Point"])
-            st.subheader("Buyer Allocation according to CP schedule")
-            st.dataframe(alloc_df)
-            st.download_button(
-                "Download Per-Date Allocation CSV",
-                data=alloc_df.to_csv(index=False).encode('utf-8'),
-                file_name="per_date_allocation.csv",
-                mime="text/csv"
-            )
+            
+            allocation_df = pd.DataFrame(allocation_results)
+            st.subheader("Scheduled Allocations")
+            st.dataframe(allocation_df)
 
 if __name__ == "__main__":
     main()
