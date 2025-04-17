@@ -3,219 +3,261 @@ import pandas as pd
 import numpy as np
 
 
-def compute_buyer_stats(buyer_df: pd.DataFrame) -> tuple[float, float]:
+def compute_buyer_stats(buyer_df):
     """
-    Compute buyer-level stats:
-      - Global yield (%) from last 3 valid harvests.
-      - Latest juice loss (%) at Kasese.
+    Compute global statistics for a single buyer:
+      - Global yield: last 3 valid harvests
+      - Global juice loss: most recent non-null
     """
-    # Filter valid numeric rows
-    valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
-    valid = valid[valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
-    valid = valid[valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
-
-    # Compute yield
-    last_three = valid.head(3)
-    total_fresh = last_three["Fresh_Purchased"].sum()
-    total_dry = last_three["Dry_Output"].sum()
+    valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"]).copy()
+    valid = valid[
+        valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float))) &
+        valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))
+    ]
+    last_3 = valid.head(3)
+    total_fresh = last_3["Fresh_Purchased"].sum()
+    total_dry = last_3["Dry_Output"].sum()
     global_yield = (total_dry / total_fresh) * 100 if total_fresh > 0 else np.nan
 
-    # Compute latest juice loss
-    latest_loss = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
-    if not latest_loss.empty:
-        val = latest_loss["Juice_Loss_Kasese"].iloc[0]
-        juice_loss = round(val * 100, 2) if isinstance(val, (int, float)) else np.nan
+    latest = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
+    if not latest.empty:
+        jl = latest["Juice_Loss_Kasese"].values[0]
+        juice_loss = round(jl * 100, 2) if isinstance(jl, (int, float)) else np.nan
     else:
         juice_loss = np.nan
 
     return global_yield, juice_loss
 
 
+def clean_and_rename(df):
+    # Collapse all whitespace (including non-breaking spaces), then strip
+    df.columns = (
+        df.columns
+          .str.replace(r"\s+", " ", regex=True)
+          .str.replace("\xa0", " ")
+          .str.strip()
+    )
+
+    # Map actual Excel headers to internal names
+    rename_map = {
+        "Harvest ID": "Harvest_ID",
+        "Harvest date": "Harvest_ID",
+        "Buyer Name": "Buyer",
+        "Buyer": "Buyer",
+        "Collection Point": "Collection_Point",
+        "Fresh Purchased": "Fresh_Purchased",
+        "Juice Loss Kasese": "Juice_Loss_Kasese",
+        "Dry Output": "Dry_Output",
+    }
+    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+    return df
+
+
 def main():
     st.title("LTC Buyer CP Deployment")
 
-    buyer_file = st.file_uploader("Upload Buyer Performance (xlsx)", type="xlsx")
-    schedule_file = st.file_uploader("Upload CP Schedule (xlsx)", type="xlsx")
+    st.markdown("### Upload Buyer Performance Excel")
+    buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
 
-    if not buyer_file:
-        st.info("Please upload the Buyer Performance Excel to proceed.")
-        return
+    st.markdown("### Upload CP Schedule Excel")
+    schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
 
-    # Read buyer data
-    df = pd.read_excel(buyer_file, header=4)
-    df.columns = df.columns.str.replace("\n", " ").str.strip()
+    if buyer_file is not None:
+        # --------------------------------
+        # PART 1: Buyer Global Performance
+        # --------------------------------
+        df = pd.read_excel(buyer_file, header=4)
+        df = clean_and_rename(df)
 
-    # Positional rename: A->Harvest_ID, B->Buyer, D->Collection_Point,
-    # E->Fresh_Purchased, H->Juice_Loss_Kasese, P->Dry_Output
-    if len(df.columns) < 16:
-        st.error(f"Expected at least 16 columns in Buyer file; found {len(df.columns)}.")
-        return
+        # Sanity check for required columns
+        required = ["Harvest_ID", "Buyer", "Collection_Point", "Fresh_Purchased", "Dry_Output", "Juice_Loss_Kasese"]
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            st.error(f"Missing columns after cleaning: {missing}")
+            st.stop()
 
-    rename_map = {
-        df.columns[0]: "Harvest_ID",
-        df.columns[1]: "Buyer",
-        df.columns[3]: "Collection_Point",
-        df.columns[4]: "Fresh_Purchased",
-        df.columns[7]: "Juice_Loss_Kasese",
-        df.columns[16]: "Dry_Output",
-    }
-    df.rename(columns=rename_map, inplace=True)
+        df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        df.sort_index(ascending=False, inplace=True)
 
-    # Check for required columns
-    required_cols = set(rename_map.values())
-    missing = required_cols - set(df.columns)
-    if missing:
-        st.error(f"Missing required columns: {missing}")
-        st.write("Available columns:", df.columns.tolist())
-        return
-
-    # Normalize Juice_Loss_Kasese: strip '%', convert to fraction
-    loss = df["Juice_Loss_Kasese"].astype(str).str.rstrip('%').replace('', np.nan)
-    df["Juice_Loss_Kasese"] = pd.to_numeric(loss, errors="coerce")
-    df["Juice_Loss_Kasese"] = df["Juice_Loss_Kasese"].apply(lambda x: x/100 if pd.notnull(x) and abs(x) > 1 else x)
-
-    # Ensure numeric Dry_Output and Fresh_Purchased
-    df["Fresh_Purchased"] = pd.to_numeric(df["Fresh_Purchased"], errors="coerce")
-    df["Dry_Output"] = pd.to_numeric(df["Dry_Output"], errors="coerce")
-
-    # Sort descending to get latest rows first
-    df.sort_index(ascending=False, inplace=True)
-
-    # Part 1: Global stats per buyer
-    stats = []
-    for buyer, group in df.groupby("Buyer"):
-        gy, gj = compute_buyer_stats(group)
-        stats.append({"Buyer": buyer, "Global_Yield": gy, "Global_Juice_Loss": gj})
-    global_df = pd.DataFrame(stats)
-    global_df["Yield three prior harvest(%)"] = global_df["Global_Yield"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-    global_df["Juice loss at Kasese(%)"] = global_df["Global_Juice_Loss"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-
-    st.subheader("Buyer Global Performance")
-    st.dataframe(global_df[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
-    st.download_button(
-        "Download Buyer Global Performance CSV",
-        global_df.to_csv(index=False).encode("utf-8"),
-        file_name="buyer_global_performance.csv",
-        mime="text/csv"
-    )
-
-    # Filter qualified buyers
-    qualified = global_df[(global_df.Global_Yield >= 36) & (global_df.Global_Juice_Loss <= 20)]
-
-    # Part 2: Allocation by Collection Point
-    cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
-        "Fresh_Purchased": "sum",
-        "Dry_Output": "sum"
-    }).reset_index()
-    cp_stats["CP_Yield"] = np.where(
-        cp_stats["Fresh_Purchased"] > 0,
-        (cp_stats["Dry_Output"] / cp_stats["Fresh_Purchased"]) * 100,
-        np.nan
-    )
-    cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].map(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-    candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
-
-    ranking = []
-    for cp, grp in candidates.groupby("Collection_Point"):
-        ordered = grp.sort_values(by="CP_Yield", ascending=False)["Buyer"].tolist()
-        ranking.append({
-            "Collection_Point": cp,
-            "Best Buyer for CP": ordered[0] if len(ordered) > 0 else "",
-            "Second Best Buyer for CP": ordered[1] if len(ordered) > 1 else "",
-            "Third Best Buyer for CP": ordered[2] if len(ordered) > 2 else "",
-        })
-    rank_df = pd.DataFrame(ranking)
-    display_df = candidates.merge(rank_df, on="Collection_Point").drop_duplicates(["Collection_Point", "Buyer"]) 
-
-    display_df = display_df.rename(columns={"CP_Yield_Display": "CP Yield(%)"})
-    st.subheader("Global Buyer Performance by CP")
-    st.dataframe(display_df[[
-        "Collection_Point", "Buyer", "Yield three prior harvest(%)",
-        "Juice loss at Kasese(%)", "CP Yield(%)",
-        "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
-    ]])
-    st.download_button(
-        "Download Global Allocation CSV",
-        display_df.to_csv(index=False).encode("utf-8"),
-        file_name="global_allocation.csv",
-        mime="text/csv"
-    )
-
-    # Part 3: Per-Date Allocation with dynamic fallback
-    if schedule_file:
-        sched = pd.read_excel(schedule_file)
-        sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
-        sched = sched[sched.Date.notnull() & sched.CP.notnull()].copy()
-        sched["Date"] = pd.to_datetime(sched.Date, errors="coerce")
-        sched = sched[sched.Date.notnull()]
-
-        allocation = []
-        for dt in sorted(sched.Date.dt.date.unique()):
-            cps = sched[sched.Date.dt.date == dt]["CP"].unique()
-            # Prepare candidate lists
-            cand_by_cp = {
-                cp: candidates[candidates.Collection_Point == cp]
-                         .sort_values(by="CP_Yield", ascending=False)
-                         .to_dict("records")
-                for cp in cps
-            }
-            assign = {cp: [] for cp in cps}
-            used = set()
-            # Three allocation rounds
-            for rnd in range(3):
-                # Propose
-                proposals = {}
-                for cp in cps:
-                    if len(assign[cp]) > rnd:
-                        continue
-                    for c in cand_by_cp.get(cp, []):
-                        if c["Buyer"] not in used:
-                            proposals[cp] = (c["Buyer"], c["CP_Yield"])
-                            break
-                    else:
-                        proposals[cp] = None
-                # Resolve conflicts
-                by_buyer = {}
-                for cp, prop in proposals.items():
-                    if prop:
-                        by_buyer.setdefault(prop[0], []).append((cp, prop[1]))
-                for buyer, lst in by_buyer.items():
-                    if len(lst) > 1:
-                        best_cp = max(lst, key=lambda x: x[1])[0]
-                        for cp, _ in lst:
-                            if cp != best_cp:
-                                proposals[cp] = None
-                # Assign and fallback
-                for cp, prop in proposals.items():
-                    if prop:
-                        assign[cp].append(prop[0])
-                        used.add(prop[0])
-                fallback = qualified[~qualified.Buyer.isin(used)].sort_values(by="Global_Yield", ascending=False)
-                for cp in cps:
-                    if len(assign[cp]) <= rnd and not fallback.empty:
-                        fb = fallback.iloc[0].Buyer
-                        assign[cp].append(fb)
-                        used.add(fb)
-                        fallback = fallback.iloc[1:]
-            # Record
-            for cp in cps:
-                sel = assign[cp] + [None, None, None]
-                allocation.append({
-                    "Date": dt,
-                    "Collection_Point": cp,
-                    "Best Buyer for CP": sel[0] or "",
-                    "Second Best Buyer for CP": sel[1] or "",
-                    "Third Best Buyer for CP": sel[2] or "",
-                })
-        alloc_df = pd.DataFrame(allocation).sort_values(["Date", "Collection_Point"])
-        st.subheader("Buyer Allocation by Date and CP")
-        st.dataframe(alloc_df)
-        st.download_button(
-            "Download Per-Date Allocation CSV",
-            alloc_df.to_csv(index=False).encode("utf-8"),
-            file_name="per_date_allocation.csv",
-            mime="text/csv"
+        # Compute global stats for each buyer
+        global_list = []
+        for buyer, bdf in df.groupby("Buyer"):
+            g_yield, g_juice = compute_buyer_stats(bdf)
+            global_list.append({
+                "Buyer": buyer,
+                "Global_Yield": g_yield,
+                "Global_Juice_Loss": g_juice
+            })
+        global_performance_all = pd.DataFrame(global_list)
+        global_performance_all["Yield three prior harvest(%)"] = (
+            global_performance_all["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         )
+        global_performance_all["Juice loss at Kasese(%)"] = (
+            global_performance_all["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+        )
+
+        st.subheader("Buyer Global Performance")
+        st.dataframe(global_performance_all[["Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)"]])
+        csv_buyer_stats = global_performance_all.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Buyer Global Performance CSV",
+            data=csv_buyer_stats,
+            file_name="buyer_global_performance.csv",
+            mime="text/csv",
+        )
+
+        # Filter qualified buyers
+        filtered_global_stats_df = global_performance_all[
+            (global_performance_all["Global_Yield"] >= 36) &
+            (global_performance_all["Global_Juice_Loss"] <= 20)
+        ].copy()
+
+        # --------------------------------
+        # PART 2: Allocation by CP (Display)
+        # --------------------------------
+        cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg({
+            "Fresh_Purchased": "sum",
+            "Dry_Output": "sum"
+        }).reset_index()
+        cp_stats["CP_Yield"] = cp_stats.apply(
+            lambda row: (row["Dry_Output"] / row["Fresh_Purchased"]) * 100 if row["Fresh_Purchased"] > 0 else np.nan,
+            axis=1
+        )
+        cp_stats["CP_Yield_Display"] = cp_stats["CP_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+
+        candidate_df = pd.merge(cp_stats, filtered_global_stats_df, on="Buyer", how="inner")
+
+        # Rank candidates per CP
+        ranking_list = []
+        for cp, group in candidate_df.groupby("Collection_Point"):
+            sorted_grp = group.sort_values(by="CP_Yield", ascending=False)
+            ranking_list.append({
+                "Collection_Point": cp,
+                "Best Buyer for CP": sorted_grp.iloc[0]["Buyer"] if len(sorted_grp) > 0 else "",
+                "Second Best Buyer for CP": sorted_grp.iloc[1]["Buyer"] if len(sorted_grp) > 1 else "",
+                "Third Best Buyer for CP": sorted_grp.iloc[2]["Buyer"] if len(sorted_grp) > 2 else ""
+            })
+        ranking_df = pd.DataFrame(ranking_list)
+
+        display_df = pd.merge(candidate_df, ranking_df, on="Collection_Point", how="left")
+        display_df["Best Buyer for CP"] = display_df.apply(
+            lambda r: r["Buyer"] if r["Buyer"] == r["Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Second Best Buyer for CP"] = display_df.apply(
+            lambda r: r["Buyer"] if r["Buyer"] == r["Second Best Buyer for CP"] else "", axis=1
+        )
+        display_df["Third Best Buyer for CP"] = display_df.apply(
+            lambda r: r["Buyer"] if r["Buyer"] == r["Third Best Buyer for CP"] else "", axis=1
+        )
+
+        final_display = display_df[[
+            "Collection_Point", "Buyer", "Yield three prior harvest(%)", "Juice loss at Kasese(%)",
+            "CP_Yield_Display", "Best Buyer for CP", "Second Best Buyer for CP", "Third Best Buyer for CP"
+        ]].drop_duplicates().sort_values("Collection_Point")
+        final_display.rename(columns={"CP_Yield_Display": "CP Yield(%)"}, inplace=True)
+
+        st.subheader("Global Buyer Performance by CP")
+        st.dataframe(final_display)
+        csv_global = final_display.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Global Allocation CSV",
+            data=csv_global,
+            file_name="global_allocation.csv",
+            mime="text/csv",
+        )
+
+        # --------------------------------
+        # PART 3: Per-Date Allocation
+        # --------------------------------
+        if schedule_file is not None:
+            sched_df = pd.read_excel(schedule_file)
+            sched_df.rename(columns={
+                sched_df.columns[0]: "Date",
+                sched_df.columns[3]: "CP"
+            }, inplace=True)
+            sched_df = sched_df[sched_df["Date"].notnull() & sched_df["CP"].notnull()].copy()
+            sched_df["Date"] = pd.to_datetime(sched_df["Date"], errors="coerce")
+            sched_df.dropna(subset=["Date"], inplace=True)
+
+            allocation_results = []
+            for dt in sched_df["Date"].dt.date.unique():
+                cps = sched_df[sched_df["Date"].dt.date == dt]["CP"].unique()
+
+                # build candidate lists
+                candidates_by_cp = {}
+                for cp in cps:
+                    sub = candidate_df[candidate_df["Collection_Point"] == cp]
+                    sub_sorted = sub.sort_values(by="CP_Yield", ascending=False).drop_duplicates("Buyer")
+                    candidates_by_cp[cp] = sub_sorted.to_dict("records")
+
+                assignment = {cp: [] for cp in cps}
+                assigned = set()
+
+                # three rounds of selection
+                for round_no in range(3):
+                    proposals = {}
+                    for cp in cps:
+                        if len(assignment[cp]) > round_no:
+                            continue
+                        for cand in candidates_by_cp.get(cp, []):
+                            if cand["Buyer"] not in assigned:
+                                proposals[cp] = (cand["Buyer"], cand["CP_Yield"])
+                                break
+                        else:
+                            proposals[cp] = None
+
+                    # resolve conflicts
+                    buyer_props = {}
+                    for cp, prop in proposals.items():
+                        if prop:
+                            buyer_props.setdefault(prop[0], []).append((cp, prop[1]))
+                    for buyer, lst in buyer_props.items():
+                        if len(lst) > 1:
+                            best_cp = max(lst, key=lambda x: x[1])[0]
+                            for cp, _ in lst:
+                                if cp != best_cp:
+                                    proposals[cp] = None
+
+                    # assign
+                    for cp, prop in proposals.items():
+                        if prop:
+                            assignment[cp].append(prop[0])
+                            assigned.add(prop[0])
+
+                    # fallback
+                    fallback = filtered_global_stats_df[~filtered_global_stats_df["Buyer"].isin(assigned)]
+                    fallback = fallback.sort_values("Global_Yield", ascending=False)
+                    for cp in cps:
+                        if len(assignment[cp]) <= round_no and not fallback.empty:
+                            fb = fallback.iloc[0]["Buyer"]
+                            assignment[cp].append(fb)
+                            assigned.add(fb)
+                            fallback = fallback.iloc[1:]
+
+                for cp in cps:
+                    b1 = assignment[cp][0] if len(assignment[cp]) > 0 else ""
+                    b2 = assignment[cp][1] if len(assignment[cp]) > 1 else ""
+                    b3 = assignment[cp][2] if len(assignment[cp]) > 2 else ""
+                    allocation_results.append({
+                        "Date": dt,
+                        "Collection_Point": cp,
+                        "Best Buyer for CP": b1,
+                        "Second Best Buyer for CP": b2,
+                        "Third Best Buyer for CP": b3
+                    })
+
+            allocation_df = pd.DataFrame(allocation_results)
+            allocation_df.sort_values(by=["Date", "Collection_Point"], inplace=True)
+
+            st.subheader("Buyer Allocation according to CP schedule")
+            st.dataframe(allocation_df)
+            csv_date = allocation_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Per Date Allocation CSV",
+                data=csv_date,
+                file_name="per_date_allocation.csv",
+                mime="text/csv",
+            )
 
 if __name__ == "__main__":
     main()
