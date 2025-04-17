@@ -65,7 +65,22 @@ def main():
             st.error(f"Missing columns in Buyer file: {missing}\nAvailable columns: {list(df.columns)}")
             return
 
-        df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        # Normalize Juice_Loss_Kasese: strip '%' and convert to fraction
+        if isinstance(df["Juice_Loss_Kasese"], pd.Series):
+            # Remove percentage sign if present, convert to float
+            df["Juice_Loss_Kasese"] = (
+                df["Juice_Loss_Kasese"]
+                .astype(str)
+                .str.rstrip('%')
+                .replace('', np.nan)
+                .astype(float)
+            )
+            # Convert to fraction if values appear as whole numbers (>1)
+            df["Juice_Loss_Kasese"] = df["Juice_Loss_Kasese"].apply(
+                lambda x: x/100 if pd.notnull(x) and abs(x) > 1 else x
+            )
+        else:
+            st.warning("Could not normalize Juice_Loss_Kasese column; unexpected type")
         df.sort_index(ascending=False, inplace=True)
 
         # Part 1
