@@ -81,7 +81,7 @@ def main():
         
         # For allocation, only consider qualified buyers.
         filtered_global_stats_df = global_performance_all[
-            (global_performance_all["Global_Yield"] >= 36) & (global_performance_all["Global_Juice_Loss"] <= 20)
+            (global_performance_all["Global_Yield"] >= 37) & (global_performance_all["Global_Juice_Loss"] <= 20)
         ].copy()
         
         # -------------------------------
