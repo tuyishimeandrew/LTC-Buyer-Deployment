@@ -9,14 +9,17 @@ def compute_buyer_stats(buyer_df):
       - Global yield: using last 3 valid harvests
       - Global juice loss: most recent non-null value (×100, 2 decimals)
     """
+    # Filter rows with numeric Fresh_Purchased and Dry_Output
     valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
     valid = valid[valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
     valid = valid[valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
+    # Take the last 3 harvests
     last_3 = valid.head(3)
     total_fresh_3 = last_3["Fresh_Purchased"].sum()
     total_dry_3 = last_3["Dry_Output"].sum()
     global_yield = (total_dry_3 / total_fresh_3) * 100 if total_fresh_3 > 0 else np.nan
 
+    # Most recent juice loss
     latest_loss = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
     if not latest_loss.empty:
         jl = latest_loss["Juice_Loss_Kasese"].iloc[0]
@@ -33,6 +36,7 @@ def main():
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
 
     if buyer_file:
+        # Read and rename columns
         df = pd.read_excel(buyer_file, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",
@@ -43,10 +47,9 @@ def main():
             df.columns[15]: "Dry_Output"
         }, inplace=True)
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        # Drop rows where Harvest_ID is null or 0
+        df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
         df.sort_index(ascending=False, inplace=True)
-
-        # Drop any row below sheet row 6 that doesn't contain 'H'
-        df = df[df.index <= 1 | df.astype(str).apply(lambda r: r.str.contains('H').any(), axis=1)]
 
         # Part 1: Buyer Global Performance
         global_stats = []
@@ -55,6 +58,7 @@ def main():
             global_stats.append({"Buyer": buyer, "Global_Yield": g_yield, "Global_Juice_Loss": g_juice})
         global_df = pd.DataFrame(global_stats)
 
+        # Overall stats (all valid rows)
         valid_all = df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
         valid_all = valid_all[valid_all["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
         valid_all = valid_all[valid_all["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
@@ -73,6 +77,7 @@ def main():
             np.nan
         )
 
+        # Merge and format
         perf_df = global_df.merge(agg_all, on="Buyer", how="left")
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
@@ -96,7 +101,7 @@ def main():
             mime="text/csv"
         )
 
-        # Part 3: Per-Date Allocation
+        # Part 2: Per-Date Allocation (Buyer Allocation according to schedule)
         if schedule_file:
             sched = pd.read_excel(schedule_file)
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
@@ -104,8 +109,9 @@ def main():
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
             sched = sched.dropna(subset=["Date"])
 
-            # Reuse "qualified" and "candidates" from earlier
-            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Global_Juice_Loss"] <= 20)]
+            # Prepare qualified buyers
+            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Global_Juice_Loss"] <= 20)].copy()
+            # Build candidate pool with CP yields
             cp_stats = (
                 df.groupby(["Collection_Point", "Buyer"]).
                 agg({"Fresh_Purchased": "sum", "Dry_Output": "sum"}).
@@ -136,6 +142,7 @@ def main():
                             continue
                         candidate = next((c for c in pool_by_cp[cp] if c["Buyer"] not in used_buyers), None)
                         props[cp] = candidate
+                    # resolve conflicts
                     proposals = {}
                     for cp, c in props.items():
                         if c:
@@ -146,10 +153,12 @@ def main():
                             for cp, _ in reps:
                                 if cp != best_cp:
                                     props[cp] = None
+                    # assign
                     for cp, c in props.items():
                         if c:
                             assignment[cp].append(c["Buyer"])
                             used_buyers.add(c["Buyer"])
+                    # fallback
                     fallback = qualified[~qualified["Buyer"].isin(used_buyers)].sort_values(by="Global_Yield", ascending=False)
                     for cp in cps:
                         if len(assignment[cp]) <= round_no and not fallback.empty:
