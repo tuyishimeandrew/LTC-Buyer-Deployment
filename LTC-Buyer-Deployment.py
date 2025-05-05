@@ -104,7 +104,7 @@ def main():
 
         # Part 2: Per-Date Allocation (Buyer Allocation according to schedule)
         if schedule_file:
-            sched = pd.read_excel(schedule_file, sheet_name=1)
+            sched = pd.read_excel(schedule_file, sheet_name=0)
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
             sched = sched.dropna(subset=["Date", "CP"]).copy()
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
