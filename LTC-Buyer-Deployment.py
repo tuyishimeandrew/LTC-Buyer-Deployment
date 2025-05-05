@@ -101,7 +101,7 @@ def main():
         # Merge and format for display
         perf_df = global_df.merge(agg_all, on="Buyer", how="left")
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-        perf_df["Avg yield 3 harvests(%)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+        perf_df["Yield three prior harvest(%) (Unweighted)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Overall Yield (All)(%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Total Purchased"] = perf_df["Total_Purchased"].fillna(0)
@@ -112,7 +112,7 @@ def main():
             perf_df[[
                 "Buyer",
                 "Yield three prior harvest(%)",
-                "Avg yield 3 harvests(%)",
+                "Yield three prior harvest(%) (Unweighted)",
                 "Juice loss at Kasese(%)",
                 "Overall Yield (All)(%)",
                 "Total Purchased"
