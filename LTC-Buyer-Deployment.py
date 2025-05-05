@@ -126,7 +126,7 @@ def main():
             sched = sched.dropna(subset=["Date"])
 
             # Prepare qualified buyers (for deployment: last 3-harvest yield ≥37%, overall yield ≥37%, juice loss ≤20%)
-            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Overall_Yield"] >= 37) & (perf_df["Global_Juice_Loss"] <= 20)].copy()
+            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Overall_Yield"] >= 36) & (perf_df["Global_Juice_Loss"] <= 20)].copy()
 
             # Build candidate pool with CP yields
             cp_stats = (
