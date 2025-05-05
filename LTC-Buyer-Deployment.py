@@ -174,7 +174,7 @@ def main():
                     buyer_props = {}
                     for cp, c in props.items():
                         if c:
-                            buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_YIELD"]])
+                            buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_Yield"]))
                     for b, reps in buyer_props.items():
                         if len(reps) > 1:
                             best = max(reps, key=lambda x: x[1])[0]
@@ -187,7 +187,7 @@ def main():
                             assignment[cp].append(c["Buyer"])
                             used.add(c["Buyer"])
                     # fallback
-                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_YIELD", ascending=False)
+                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
                     for cp in cps:
                         if len(assignment[cp]) <= i and not fallback.empty:
                             btr = fallback.iloc[0]["Buyer"]
