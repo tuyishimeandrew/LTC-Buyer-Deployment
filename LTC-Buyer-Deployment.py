@@ -65,7 +65,6 @@ def main():
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
         # Drop rows where Harvest_ID is null or zero
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
-        # Ensure reverse chronological order
         df.sort_index(ascending=False, inplace=True)
 
         # Compute global stats per buyer
@@ -109,18 +108,16 @@ def main():
 
         # Display global performance
         st.subheader("Buyer Global Performance")
-        cols = [
-            "Buyer",
-            "Total_Dry_Output",
-            "Yield three prior harvest(%)",
-            "Yield three prior harvest(%) (Unweighted)",
-            "Juice loss at Kasese(%)",
-            "Overall Yield (All)(%)",
-            "Total Purchased"
-        ]
-        # Ensure Total_Dry_Output present
-        perf_df = perf_df.rename(columns={"Total_Dry_Output": "Total_Dry_Output"})
-        st.dataframe(perf_df[cols])
+        st.dataframe(
+            perf_df[[
+                "Buyer",
+                "Yield three prior harvest(%)",
+                "Yield three prior harvest(%) (Unweighted)",
+                "Juice loss at Kasese(%)",
+                "Overall Yield (All)(%)",
+                "Total Purchased"
+            ]]
+        )
         st.download_button(
             label="Download Buyer Global Performance CSV",
             data=perf_df.to_csv(index=False).encode("utf-8"),
