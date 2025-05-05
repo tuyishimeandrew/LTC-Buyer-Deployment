@@ -14,8 +14,10 @@ def compute_buyer_stats(buyer_df):
     valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
     valid = valid[valid["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
     valid = valid[valid["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
+
     # Take the last 3 harvests
     last_3 = valid.head(3)
+
     # Global yield across last 3 harvests
     total_fresh_3 = last_3["Fresh_Purchased"].sum()
     total_dry_3 = last_3["Dry_Output"].sum()
@@ -23,7 +25,10 @@ def compute_buyer_stats(buyer_df):
 
     # Compute individual yields for each of the last 3 and average them
     if not last_3.empty:
-        yields = last_3.apply(lambda r: (r["Dry_Output"] / r["Fresh_Purchased"] * 100) if r["Fresh_Purchased"] > 0 else np.nan, axis=1)
+        yields = last_3.apply(
+            lambda r: (r["Dry_Output"] / r["Fresh_Purchased"] * 100) if r["Fresh_Purchased"] > 0 else np.nan,
+            axis=1
+        )
         avg_individual_yield = yields.mean()
     else:
         avg_individual_yield = np.nan
@@ -78,10 +83,15 @@ def main():
         valid_all = df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
         valid_all = valid_all[valid_all["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
         valid_all = valid_all[valid_all["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
-        agg_all = valid_all.groupby("Buyer").agg(
-            Total_Purchased=("Fresh_Purchased", "sum"),
-            Total_Dry_Output=("Dry_Output", "sum")
-        ).reset_index()
+        agg_all = (
+            valid_all
+            .groupby("Buyer")
+            .agg(
+                Total_Purchased=("Fresh_Purchased", "sum"),
+                Total_Dry_Output=("Dry_Output", "sum")
+            )
+            .reset_index()
+        )
         agg_all["Overall_Yield"] = np.where(
             agg_all["Total_Purchased"] > 0,
             agg_all["Total_Dry_Output"] / agg_all["Total_Purchased"] * 100,
@@ -109,7 +119,7 @@ def main():
             ]]
         )
         st.download_button(
-            "Download Buyer Global Performance CSV",
+            label="Download Buyer Global Performance CSV",
             data=perf_df.to_csv(index=False).encode("utf-8"),
             file_name="buyer_global_performance.csv",
             mime="text/csv"
@@ -128,18 +138,21 @@ def main():
                 (perf_df["Global_Yield"] >= 37) &
                 (perf_df["Overall_Yield"] >= 37) &
                 (perf_df["Global_Juice_Loss"] <= 20)
-            ]
+            ].copy()
 
             # Build candidate pool by CP
-            cp_stats = df.groupby(["Collection_Point", "Buyer"]).agg(
-                Fresh_Purchased=("Fresh_Purchased", "sum"),
-                Dry_Output=("Dry_Output", "sum")
-            ).reset_index()
+            cp_stats = (
+                df.groupby(["Collection_Point", "Buyer"]).agg(
+                    Fresh_Purchased=("Fresh_Purchased", "sum"),
+                    Dry_Output=("Dry_Output", "sum")
+                )
+                .reset_index()
+            )
             cp_stats["CP_Yield"] = cp_stats.apply(
                 lambda r: (r["Dry_Output"] / r["Fresh_Purchased"] * 100) if r["Fresh_Purchased"] > 0 else np.nan,
                 axis=1
             )
-            candidates = cp_stats.merge(qualified, on="Buyer")
+            candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
 
             allocations = []
             for dt in sched["Date"].dt.date.unique():
@@ -161,7 +174,7 @@ def main():
                     buyer_props = {}
                     for cp, c in props.items():
                         if c:
-                            buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_Yield"]))
+                            buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_YIELD"]])
                     for b, reps in buyer_props.items():
                         if len(reps) > 1:
                             best = max(reps, key=lambda x: x[1])[0]
@@ -174,7 +187,7 @@ def main():
                             assignment[cp].append(c["Buyer"])
                             used.add(c["Buyer"])
                     # fallback
-                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
+                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_YIELD", ascending=False)
                     for cp in cps:
                         if len(assignment[cp]) <= i and not fallback.empty:
                             btr = fallback.iloc[0]["Buyer"]
@@ -196,7 +209,7 @@ def main():
             st.subheader("Buyer Allocation according to CP schedule")
             st.dataframe(out_df)
             st.download_button(
-                "Download Per Date Allocation CSV",
+                label="Download Per Date Allocation CSV",
                 data=out_df.to_csv(index=False).encode("utf-8"),
                 file_name="per_date_allocation.csv",
                 mime="text/csv"
