@@ -32,12 +32,13 @@ def compute_buyer_stats(buyer_df):
 def main():
     st.title("LTC Buyer CP Deployment")
 
+    # Uploads
     buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
 
     if buyer_file:
-        # Read and rename columns
-        df = pd.read_excel(buyer_file, header=4)
+        # Read and rename columns from the second sheet
+        df = pd.read_excel(buyer_file, sheet_name=1, header=4)
         df.rename(columns={
             df.columns[0]: "Harvest_ID",
             df.columns[1]: "Buyer",
@@ -103,7 +104,7 @@ def main():
 
         # Part 2: Per-Date Allocation (Buyer Allocation according to schedule)
         if schedule_file:
-            sched = pd.read_excel(schedule_file)
+            sched = pd.read_excel(schedule_file, sheet_name=1)
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
             sched = sched.dropna(subset=["Date", "CP"]).copy()
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
