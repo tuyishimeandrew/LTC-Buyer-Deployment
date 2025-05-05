@@ -8,6 +8,7 @@ def compute_buyer_stats(buyer_df):
     Compute global statistics for a single buyer:
       - Global yield: using last 3 valid harvests
       - Global juice loss: most recent non-null value (×100, 2 decimals)
+      - Average dry output: mean of last 3 valid Dry_Output values
     """
     # Filter rows with numeric Fresh_Purchased and Dry_Output
     valid = buyer_df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
@@ -19,6 +20,12 @@ def compute_buyer_stats(buyer_df):
     total_dry_3 = last_3["Dry_Output"].sum()
     global_yield = (total_dry_3 / total_fresh_3) * 100 if total_fresh_3 > 0 else np.nan
 
+    # Average dry output of last 3 harvests
+    if len(last_3) > 0:
+        avg_dry_output = total_dry_3 / len(last_3)
+    else:
+        avg_dry_output = np.nan
+
     # Most recent juice loss
     latest_loss = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
     if not latest_loss.empty:
@@ -26,7 +33,8 @@ def compute_buyer_stats(buyer_df):
         juice_loss_val = round(jl * 100, 2) if isinstance(jl, (int, float)) else np.nan
     else:
         juice_loss_val = np.nan
-    return global_yield, juice_loss_val
+
+    return global_yield, juice_loss_val, avg_dry_output
 
 
 def main():
@@ -55,8 +63,13 @@ def main():
         # Part 1: Buyer Global Performance
         global_stats = []
         for buyer, bdf in df.groupby("Buyer"):
-            g_yield, g_juice = compute_buyer_stats(bdf)
-            global_stats.append({"Buyer": buyer, "Global_Yield": g_yield, "Global_Juice_Loss": g_juice})
+            g_yield, g_juice, avg_dry = compute_buyer_stats(bdf)
+            global_stats.append({
+                "Buyer": buyer,
+                "Global_Yield": g_yield,
+                "Global_Juice_Loss": g_juice,
+                "Avg_Dry_Output_3": avg_dry
+            })
         global_df = pd.DataFrame(global_stats)
 
         # Overall stats (all valid rows)
@@ -81,6 +94,7 @@ def main():
         # Merge and format
         perf_df = global_df.merge(agg_all, on="Buyer", how="left")
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+        perf_df["Avg dry output 3"] = perf_df["Avg_Dry_Output_3"].apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
         perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Overall Yield (All)(%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Total Purchased"] = perf_df["Total_Purchased"].fillna(0)
@@ -90,6 +104,7 @@ def main():
             perf_df[[
                 "Buyer",
                 "Yield three prior harvest(%)",
+                "Avg dry output 3",
                 "Juice loss at Kasese(%)",
                 "Overall Yield (All)(%)",
                 "Total Purchased"
@@ -110,8 +125,9 @@ def main():
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
             sched = sched.dropna(subset=["Date"])
 
-            # Prepare qualified buyers
-            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Global_Juice_Loss"] <= 20)].copy()
+            # Prepare qualified buyers (for deployment: last 3-harvest yield ≥37%, overall yield ≥37%, juice loss ≤20%)
+            qualified = perf_df[(perf_df["Global_Yield"] >= 37) & (perf_df["Overall_Yield"] >= 37) & (perf_df["Global_Juice_Loss"] <= 20)].copy()
+
             # Build candidate pool with CP yields
             cp_stats = (
                 df.groupby(["Collection_Point", "Buyer"]).
