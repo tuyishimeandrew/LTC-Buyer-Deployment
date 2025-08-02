@@ -70,6 +70,9 @@ def main():
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
         df.sort_index(ascending=False, inplace=True)
 
+        # Drop rows with missing Dry_Output
+        df = df.dropna(subset=["Dry_Output"])
+
         # Compute per-buyer stats
         stats = []
         for buyer, group in df.groupby("Buyer"):
@@ -199,34 +202,4 @@ def main():
                             used.add(c["Buyer"])
 
                     # Fallback: if a CP still needs a buyer, use next-best global
-                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
-                    for cp in cps:
-                        if len(assignment[cp]) <= i and not fallback.empty:
-                            pick = fallback.iloc[0]["Buyer"]
-                            assignment[cp].append(pick)
-                            used.add(pick)
-                            fallback = fallback.iloc[1:]
-
-                # Record allocations
-                for cp in cps:
-                    picks = assignment[cp]
-                    allocations.append({
-                        "Date": dt,
-                        "Collection_Point": cp,
-                        "Best Buyer for CP": picks[0] if len(picks) > 0 else "",
-                        "Second Best Buyer for CP": picks[1] if len(picks) > 1 else "",
-                        "Third Best Buyer for CP": picks[2] if len(picks) > 2 else ""
-                    })
-
-            out_df = pd.DataFrame(allocations).sort_values(["Date", "Collection_Point"])
-            st.subheader("Buyer Allocation according to CP schedule")
-            st.dataframe(out_df)
-            st.download_button(
-                label="Download Per Date Allocation CSV",
-                data=out_df.to_csv(index=False).encode("utf-8"),
-                file_name="per_date_allocation.csv",
-                mime="text/csv"
-            )
-
-if __name__ == "__main__":
-    main()
+                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield",
