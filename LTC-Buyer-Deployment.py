@@ -69,7 +69,7 @@ def main():
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
         # Drop invalid or empty rows
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
-        df = df.dropna(subset=["Dry_Output"])
+        df = df.dropna(subset=["Juice_Loss_Kasese"])
         df.sort_index(ascending=False, inplace=True)
 
         # Compute per-buyer stats
