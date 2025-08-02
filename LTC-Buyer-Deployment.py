@@ -33,7 +33,7 @@ def compute_buyer_stats(buyer_df):
     else:
         avg_individual_yield = np.nan
 
-    # Most recent juice loss
+    # Most recent juice loss (unaffected by Dry_Output)
     latest_loss = buyer_df.dropna(subset=["Juice_Loss_Kasese"]).head(1)
     if not latest_loss.empty:
         jl = latest_loss["Juice_Loss_Kasese"].iloc[0]
@@ -67,9 +67,10 @@ def main():
             df.columns[15]: "Dry_Output"
         }, inplace=True)
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
-        # Drop invalid or empty rows
+        # Drop invalid or empty harvest rows
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
-        df = df.dropna(subset=["Dry_Output"])
+        # Drop rows missing Juice_Loss_Kasese only (preserve Dry_Output for juice history)
+        df = df.dropna(subset=["Juice_Loss_Kasese"])
         df.sort_index(ascending=False, inplace=True)
 
         # Compute per-buyer stats
@@ -84,7 +85,7 @@ def main():
             })
         global_df = pd.DataFrame(stats)
 
-        # Overall yield across all records
+        # Overall yield across all records (drop rows with missing Fresh or Dry)
         valid_all = df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
         valid_all = valid_all[valid_all["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
         valid_all = valid_all[valid_all["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
@@ -132,23 +133,19 @@ def main():
 
         # Part 2: Allocation by schedule
         if schedule_file:
-            # Dynamically load first sheet from schedule file
             sched_xls = pd.ExcelFile(schedule_file)
             sched_sheet = sched_xls.sheet_names[0]
             sched = pd.read_excel(schedule_file, sheet_name=sched_sheet)
 
-            # Rename and clean schedule
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
             sched = sched.dropna(subset=["Date", "CP"])
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
             sched = sched.dropna(subset=["Date"])
 
-            # Determine qualified buyers
             qualified = perf_df[(perf_df["Global_Yield"] >= 37) &
                                  (perf_df["Overall_Yield"] >= 37) &
                                  (perf_df["Global_Juice_Loss"] <= 20)].copy()
 
-            # Build candidate pool by CP
             cp_stats = (
                 df.groupby(["Collection_Point", "Buyer"]).agg(
                     Fresh_Purchased=("Fresh_Purchased", "sum"),
@@ -162,67 +159,10 @@ def main():
             )
             candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
 
-            # Allocation logic
             allocations = []
-            for dt in sched["Date"].dt.date.unique():
-                cps = sched[sched["Date"].dt.date == dt]["CP"].unique()
-                pool_by_cp = {
-                    cp: candidates[candidates["Collection_Point"] == cp]
-                            .sort_values("CP_Yield", ascending=False)
-                            .drop_duplicates("Buyer").to_dict("records")
-                    for cp in cps
-                }
-                assignment = {cp: [] for cp in cps}
-                used = set()
+            for dt in_sched:**ERROR**
+import streamlit as st
+import pandas as pd
+import numpy as np
 
-                for i in range(3):
-                    # propose top unused candidate per CP
-                    props = {cp: next((c for c in pool_by_cp[cp] if c["Buyer"] not in used), None) for cp in cps}
-                    # resolve if same buyer on multiple
-                    buyer_props = {}
-                    for cp, c in props.items():
-                        if c:
-                            buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_Yield"]))
-                    for b, reps in buyer_props.items():
-                        if len(reps) > 1:
-                            best_cp = max(reps, key=lambda x: x[1])[0]
-                            for cp, _ in reps:
-                                if cp != best_cp:
-                                    props[cp] = None
-                    # assign
-                    for cp, c in props.items():
-                        if c:
-                            assignment[cp].append(c["Buyer"])
-                            used.add(c["Buyer"])
-                    # fallback
-                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
-                    for cp in cps:
-                        if len(assignment[cp]) <= i and not fallback.empty:
-                            pick = fallback.iloc[0]["Buyer"]
-                            assignment[cp].append(pick)
-                            used.add(pick)
-                            fallback = fallback.iloc[1:]
-
-                for cp in cps:
-                    picks = assignment[cp]
-                    allocations.append({
-                        "Date": dt,
-                        "Collection_Point": cp,
-                        "Best Buyer for CP": picks[0] if len(picks) > 0 else "",
-                        "Second Best Buyer for CP": picks[1] if len(picks) > 1 else "",
-                        "Third Best Buyer for CP": picks[2] if len(picks) > 2 else ""
-                    })
-
-            out_df = pd.DataFrame(allocations).sort_values(["Date", "Collection_Point"])
-            st.subheader("Buyer Allocation according to CP schedule")
-            st.dataframe(out_df)
-            st.download_button(
-                label="Download Per Date Allocation CSV",
-                data=out_df.to_csv(index=False).encode("utf-8"),
-                file_name="per_date_allocation.csv",
-                mime="text/csv"
-            )
-
-
-if __name__ == "__main__":
-    main()
+**NOTE** The code above truncated—please check the last merge and allocation logic block to ensure it’s correctly closed and indented.
