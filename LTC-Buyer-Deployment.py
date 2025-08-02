@@ -67,11 +67,10 @@ def main():
             df.columns[15]: "Dry_Output"
         }, inplace=True)
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
+        # Drop invalid or empty rows
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
-        df.sort_index(ascending=False, inplace=True)
-
-        # Drop rows with missing Dry_Output
         df = df.dropna(subset=["Dry_Output"])
+        df.sort_index(ascending=False, inplace=True)
 
         # Compute per-buyer stats
         stats = []
@@ -163,7 +162,7 @@ def main():
             )
             candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
 
-            # Allocation
+            # Allocation logic
             allocations = []
             for dt in sched["Date"].dt.date.unique():
                 cps = sched[sched["Date"].dt.date == dt]["CP"].unique()
@@ -173,33 +172,57 @@ def main():
                             .drop_duplicates("Buyer").to_dict("records")
                     for cp in cps
                 }
-
                 assignment = {cp: [] for cp in cps}
                 used = set()
 
-                # Three allocation rounds
                 for i in range(3):
-                    # Proposals for each CP
+                    # propose top unused candidate per CP
                     props = {cp: next((c for c in pool_by_cp[cp] if c["Buyer"] not in used), None) for cp in cps}
-
-                    # Resolve conflicts where the same buyer is proposed for multiple CPs
+                    # resolve if same buyer on multiple
                     buyer_props = {}
                     for cp, c in props.items():
                         if c:
                             buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_Yield"]))
                     for b, reps in buyer_props.items():
                         if len(reps) > 1:
-                            # keep highest-yield CP, drop others
                             best_cp = max(reps, key=lambda x: x[1])[0]
                             for cp, _ in reps:
                                 if cp != best_cp:
                                     props[cp] = None
-
-                    # Assign winners
+                    # assign
                     for cp, c in props.items():
                         if c:
                             assignment[cp].append(c["Buyer"])
                             used.add(c["Buyer"])
+                    # fallback
+                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
+                    for cp in cps:
+                        if len(assignment[cp]) <= i and not fallback.empty:
+                            pick = fallback.iloc[0]["Buyer"]
+                            assignment[cp].append(pick)
+                            used.add(pick)
+                            fallback = fallback.iloc[1:]
 
-                    # Fallback: if a CP still needs a buyer, use next-best global
-                    fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield",
+                for cp in cps:
+                    picks = assignment[cp]
+                    allocations.append({
+                        "Date": dt,
+                        "Collection_Point": cp,
+                        "Best Buyer for CP": picks[0] if len(picks) > 0 else "",
+                        "Second Best Buyer for CP": picks[1] if len(picks) > 1 else "",
+                        "Third Best Buyer for CP": picks[2] if len(picks) > 2 else ""
+                    })
+
+            out_df = pd.DataFrame(allocations).sort_values(["Date", "Collection_Point"])
+            st.subheader("Buyer Allocation according to CP schedule")
+            st.dataframe(out_df)
+            st.download_button(
+                label="Download Per Date Allocation CSV",
+                data=out_df.to_csv(index=False).encode("utf-8"),
+                file_name="per_date_allocation.csv",
+                mime="text/csv"
+            )
+
+
+if __name__ == "__main__":
+    main()
