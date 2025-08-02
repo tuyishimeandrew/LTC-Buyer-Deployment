@@ -52,8 +52,12 @@ def main():
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
 
     if buyer_file:
-        # Read performance sheet (second sheet)
-        df = pd.read_excel(buyer_file, sheet_name=1, header=4)
+        # Dynamically load first sheet from buyer file
+        xls = pd.ExcelFile(buyer_file)
+        first_sheet = xls.sheet_names[0]
+        df = pd.read_excel(buyer_file, sheet_name=first_sheet, header=4)
+
+        # Rename and clean
         df.rename(columns={
             df.columns[0]: "Harvest_ID",
             df.columns[1]: "Buyer",
@@ -63,12 +67,10 @@ def main():
             df.columns[15]: "Dry_Output"
         }, inplace=True)
         df["Juice_Loss_Kasese"] = pd.to_numeric(df["Juice_Loss_Kasese"], errors="coerce")
-        # Drop rows where Harvest_ID is null or zero
         df = df[df["Harvest_ID"].notnull() & (df["Harvest_ID"] != 0)]
-        # Ensure reverse chronological order
         df.sort_index(ascending=False, inplace=True)
 
-        # Compute global stats per buyer
+        # Compute per-buyer stats
         stats = []
         for buyer, group in df.groupby("Buyer"):
             g_yield, g_juice, avg_yield3 = compute_buyer_stats(group)
@@ -80,7 +82,7 @@ def main():
             })
         global_df = pd.DataFrame(stats)
 
-        # Overall yield per buyer across all records
+        # Overall yield across all records
         valid_all = df.dropna(subset=["Fresh_Purchased", "Dry_Output"])
         valid_all = valid_all[valid_all["Fresh_Purchased"].apply(lambda x: isinstance(x, (int, float)))]
         valid_all = valid_all[valid_all["Dry_Output"].apply(lambda x: isinstance(x, (int, float)))]
@@ -99,7 +101,7 @@ def main():
             np.nan
         )
 
-        # Merge and format for display
+        # Merge and format
         perf_df = global_df.merge(agg_all, on="Buyer", how="left")
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Yield three prior harvest(%) (Unweighted)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
@@ -118,8 +120,6 @@ def main():
             "Overall Yield (All)(%)",
             "Total Purchased"
         ]
-        # Ensure Total_Dry_Output present
-        perf_df = perf_df.rename(columns={"Total_Dry_Output": "Total_Dry_Output"})
         st.dataframe(perf_df[cols])
         st.download_button(
             label="Download Buyer Global Performance CSV",
@@ -130,18 +130,21 @@ def main():
 
         # Part 2: Allocation by schedule
         if schedule_file:
-            sched = pd.read_excel(schedule_file, sheet_name=0)
+            # Dynamically load first sheet from schedule file
+            sched_xls = pd.ExcelFile(schedule_file)
+            sched_sheet = sched_xls.sheet_names[0]
+            sched = pd.read_excel(schedule_file, sheet_name=sched_sheet)
+
+            # Rename and clean schedule
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
             sched = sched.dropna(subset=["Date", "CP"])
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
             sched = sched.dropna(subset=["Date"])
 
-            # Qualified buyers: last-3 >=37%, overall >=37%, juice loss <=20%
-            qualified = perf_df[
-                (perf_df["Global_Yield"] >= 37) &
-                (perf_df["Overall_Yield"] >= 37) &
-                (perf_df["Global_Juice_Loss"] <= 20)
-            ].copy()
+            # Determine qualified buyers
+            qualified = perf_df[(perf_df["Global_Yield"] >= 37) &
+                                 (perf_df["Overall_Yield"] >= 37) &
+                                 (perf_df["Global_Juice_Loss"] <= 20)].copy()
 
             # Build candidate pool by CP
             cp_stats = (
@@ -157,6 +160,7 @@ def main():
             )
             candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
 
+            # Allocation
             allocations = []
             for dt in sched["Date"].dt.date.unique():
                 cps = sched[sched["Date"].dt.date == dt]["CP"].unique()
@@ -172,32 +176,38 @@ def main():
 
                 # Three allocation rounds
                 for i in range(3):
+                    # Proposals for each CP
                     props = {cp: next((c for c in pool_by_cp[cp] if c["Buyer"] not in used), None) for cp in cps}
-                    # resolve conflicts
+
+                    # Resolve conflicts where the same buyer is proposed for multiple CPs
                     buyer_props = {}
                     for cp, c in props.items():
                         if c:
                             buyer_props.setdefault(c["Buyer"], []).append((cp, c["CP_Yield"]))
                     for b, reps in buyer_props.items():
                         if len(reps) > 1:
-                            best = max(reps, key=lambda x: x[1])[0]
+                            # keep highest-yield CP, drop others
+                            best_cp = max(reps, key=lambda x: x[1])[0]
                             for cp, _ in reps:
-                                if cp != best:
+                                if cp != best_cp:
                                     props[cp] = None
-                    # assign
+
+                    # Assign winners
                     for cp, c in props.items():
                         if c:
                             assignment[cp].append(c["Buyer"])
                             used.add(c["Buyer"])
-                    # fallback
+
+                    # Fallback: if a CP still needs a buyer, use next-best global
                     fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
                     for cp in cps:
                         if len(assignment[cp]) <= i and not fallback.empty:
-                            btr = fallback.iloc[0]["Buyer"]
-                            assignment[cp].append(btr)
-                            used.add(btr)
+                            pick = fallback.iloc[0]["Buyer"]
+                            assignment[cp].append(pick)
+                            used.add(pick)
                             fallback = fallback.iloc[1:]
 
+                # Record allocations
                 for cp in cps:
                     picks = assignment[cp]
                     allocations.append({
