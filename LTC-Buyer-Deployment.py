@@ -48,8 +48,8 @@ def main():
     st.title("LTC Buyer CP Deployment")
 
     # File uploads
-    buyer_file = st.file_uploader("Upload Buyer Performance Excel", type=["xlsx"], key="buyer")
-    schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
+    buyer_file = st.file_uploader("Please Upload Buyer Procurement Sheet (as is)", type=["xlsx"], key="buyer")
+    schedule_file = st.file_uploader("Please Upload CP deployment schedule", type=["xlsx"], key="schedule")
 
     if buyer_file:
         # Load specifically the 'BGYO Performance' sheet
