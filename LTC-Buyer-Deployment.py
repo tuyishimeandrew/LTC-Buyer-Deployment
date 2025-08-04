@@ -113,18 +113,20 @@ def main():
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Yield three prior harvest(%) (Unweighted)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-        perf_df["Overall Yield (All)(%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+        perf_df["Overall Yield (%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Total Purchased"] = perf_df["Total_Purchased"].fillna(0)
 
         # Select only efficient columns
         display_cols = [
             "Buyer",
+            "Total Purchased",
             "Total Dry_Output",
-            "Yield three prior harvest(%)",
-            "Yield three prior harvest(%) (Unweighted)",
             "Juice loss at Kasese(%)",
-            "Overall Yield (All)(%)",
-            "Total Purchased"
+            "Overall Yield (%)",
+            "Yield three prior harvest(%)",
+            "Yield three prior harvest(%) (Unweighted)"
+            
+            
         ]
         if "Total_Dry_Output" in perf_df.columns and "Total Dry_Output" not in perf_df.columns:
             perf_df.rename(columns={"Total_Dry_Output": "Total Dry_Output"}, inplace=True)
