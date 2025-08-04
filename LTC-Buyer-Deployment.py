@@ -112,7 +112,7 @@ def main():
         # Format for display
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Yield three prior harvest(%) (Unweighted)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-        perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+        perf_df["Latest Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Overall Yield (%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Total Purchased"] = perf_df["Total_Purchased"].fillna(0)
 
@@ -121,7 +121,7 @@ def main():
             "Buyer",
             "Total Purchased",
             "Total Dry_Output",
-            "Juice loss at Kasese(%)",
+            "Latest Juice loss at Kasese(%)",
             "Overall Yield (%)",
             "Yield three prior harvest(%)",
             "Yield three prior harvest(%) (Unweighted)"
