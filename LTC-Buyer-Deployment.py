@@ -52,10 +52,12 @@ def main():
     schedule_file = st.file_uploader("Upload CP Schedule Excel", type=["xlsx"], key="schedule")
 
     if buyer_file:
-        # Dynamically load first sheet from buyer file
-        xls = pd.ExcelFile(buyer_file)
-        first_sheet = xls.sheet_names[0]
-        df = pd.read_excel(buyer_file, sheet_name=first_sheet, header=4)
+        # Load specifically the 'BGYO Performance' sheet
+        try:
+            df = pd.read_excel(buyer_file, sheet_name='BGYO Performance', header=4)
+        except Exception:
+            st.error("Sheet 'BGYO Performance' not found in uploaded file.")
+            return
 
         # Rename and clean
         df.rename(columns={
@@ -103,52 +105,54 @@ def main():
             np.nan
         )
 
-        # Merge and format
+        # Merge and dedupe columns
         perf_df = global_df.merge(agg_all, on="Buyer", how="left")
+        perf_df = perf_df.loc[:, ~perf_df.columns.duplicated()]
+
+        # Format for display
         perf_df["Yield three prior harvest(%)"] = perf_df["Global_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Yield three prior harvest(%) (Unweighted)"] = perf_df["Avg_Yield_3"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Juice loss at Kasese(%)"] = perf_df["Global_Juice_Loss"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Overall Yield (All)(%)"] = perf_df["Overall_Yield"].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
         perf_df["Total Purchased"] = perf_df["Total_Purchased"].fillna(0)
 
-        # Display global performance
-        st.subheader("Buyer Global Performance")
-        cols = [
+        # Select only efficient columns
+        display_cols = [
             "Buyer",
-            "Total_Dry_Output",
+            "Total Dry_Output",
             "Yield three prior harvest(%)",
             "Yield three prior harvest(%) (Unweighted)",
             "Juice loss at Kasese(%)",
             "Overall Yield (All)(%)",
             "Total Purchased"
         ]
-        st.dataframe(perf_df[cols])
+        if "Total_Dry_Output" in perf_df.columns and "Total Dry_Output" not in perf_df.columns:
+            perf_df.rename(columns={"Total_Dry_Output": "Total Dry_Output"}, inplace=True)
+
+        st.subheader("Buyer Global Performance")
+        st.dataframe(perf_df[display_cols])
         st.download_button(
             label="Download Buyer Global Performance CSV",
-            data=perf_df.to_csv(index=False).encode("utf-8"),
+            data=perf_df[display_cols].to_csv(index=False).encode("utf-8"),
             file_name="buyer_global_performance.csv",
             mime="text/csv"
         )
 
         # Part 2: Allocation by schedule
         if schedule_file:
-            # Dynamically load first sheet from schedule file
             sched_xls = pd.ExcelFile(schedule_file)
             sched_sheet = sched_xls.sheet_names[0]
             sched = pd.read_excel(schedule_file, sheet_name=sched_sheet)
 
-            # Rename and clean schedule
             sched.rename(columns={sched.columns[0]: "Date", sched.columns[3]: "CP"}, inplace=True)
             sched = sched.dropna(subset=["Date", "CP"])
             sched["Date"] = pd.to_datetime(sched["Date"], errors="coerce")
             sched = sched.dropna(subset=["Date"])
 
-            # Determine qualified buyers
             qualified = perf_df[(perf_df["Global_Yield"] >= 37) &
                                  (perf_df["Overall_Yield"] >= 37) &
                                  (perf_df["Global_Juice_Loss"] <= 20)].copy()
 
-            # Build candidate pool by CP
             cp_stats = (
                 df.groupby(["Collection_Point", "Buyer"]).agg(
                     Fresh_Purchased=("Fresh_Purchased", "sum"),
@@ -162,7 +166,6 @@ def main():
             )
             candidates = cp_stats.merge(qualified, on="Buyer", how="inner")
 
-            # Allocation logic
             allocations = []
             for dt in sched["Date"].dt.date.unique():
                 cps = sched[sched["Date"].dt.date == dt]["CP"].unique()
@@ -176,9 +179,7 @@ def main():
                 used = set()
 
                 for i in range(3):
-                    # propose top unused candidate per CP
                     props = {cp: next((c for c in pool_by_cp[cp] if c["Buyer"] not in used), None) for cp in cps}
-                    # resolve if same buyer on multiple
                     buyer_props = {}
                     for cp, c in props.items():
                         if c:
@@ -189,12 +190,10 @@ def main():
                             for cp, _ in reps:
                                 if cp != best_cp:
                                     props[cp] = None
-                    # assign
                     for cp, c in props.items():
                         if c:
                             assignment[cp].append(c["Buyer"])
                             used.add(c["Buyer"])
-                    # fallback
                     fallback = qualified[~qualified["Buyer"].isin(used)].sort_values("Global_Yield", ascending=False)
                     for cp in cps:
                         if len(assignment[cp]) <= i and not fallback.empty:
@@ -214,6 +213,8 @@ def main():
                     })
 
             out_df = pd.DataFrame(allocations).sort_values(["Date", "Collection_Point"])
+            out_df = out_df.loc[:, ~out_df.columns.duplicated()]
+
             st.subheader("Buyer Allocation according to CP schedule")
             st.dataframe(out_df)
             st.download_button(
